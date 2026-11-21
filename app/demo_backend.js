@@ -148,7 +148,7 @@ async function makeDemoBackend() {
   /* ---- strumenti per provare l'app ---- */
   const demo = {
     async users() {
-      const r = await pg.query(`select d.id, d.label, d.descr, p.role from demo_users d
+      const r = await pg.query(`select d.id, d.label, d.descr, d.ord, p.role from demo_users d
                                 join profiles p on p.id = d.id order by d.ord`);
       return r.rows;
     },
@@ -178,6 +178,9 @@ async function makeDemoBackend() {
       await pg.exec('set session_replication_role = origin');
     },
     async expireOffers() { await pg.exec(`update offers set expires_at = now() - interval '1 minute' where status = 'inviata'`); },
+    async completeVerification(requestId, outcome) { await pg.query(`select complete_verification($1, $2, 'demo')`, [requestId, outcome]); },
+    async generateWorkers(n) { const r = await pg.query(`select test_generate_workers($1, 'Milano', 30) as n`, [n]); return r.rows[0].n; },
+    async purgeTest() { const r = await pg.query(`select test_purge() as n`); return r.rows[0].n; },
     async cron() {
       await pg.exec('select run_offer_maintenance()');
       await pg.exec('select close_guarantees()');

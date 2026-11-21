@@ -230,6 +230,14 @@ language sql stable security definer set search_path = public as $$
     and public.worker_is_free(a.worker_id, j.starts_at, j.ends_at)
 $$;
 
+-- Punti di aggancio per la certificazione dell'identità (Fase 2g li sostituisce con la logica reale)
+create function public.is_verified(p_worker uuid) returns boolean
+language sql stable security definer set search_path = public as $$ select false $$;
+create function public.job_requires_verification(p_job uuid) returns boolean
+language sql stable security definer set search_path = public as $$ select false $$;
+create function public.job_allows_worker(p_job uuid, p_worker uuid) returns boolean
+language sql stable security definer set search_path = public as $$ select true $$;
+
 -- controlli di coerenza sugli annunci
 create function public.jobs_guard() returns trigger
 language plpgsql security definer set search_path = public as $$
@@ -314,6 +322,9 @@ declare v_slot record; v_id uuid;
 begin
   select * into v_slot from public.open_standby_slots() where guarantee_id = p_guarantee;
   if not found then raise exception 'slot non disponibile'; end if;
+  if not public.job_allows_worker(v_slot.job_id, auth.uid()) then
+    raise exception 'questo ruolo richiede identità verificata: verificati dal tuo profilo';
+  end if;
   begin
     insert into public.standby_assignments (guarantee_id, job_id, worker_id)
     values (p_guarantee, v_slot.job_id, auth.uid()) returning id into v_id;
@@ -356,6 +367,9 @@ begin
   if v_n >= v_j.headcount then raise exception 'posti esauriti'; end if;
   if not public.worker_is_free(v_a.seeker_id, v_j.starts_at, v_j.ends_at) then
     raise exception 'il candidato ha già un impegno in quella fascia';
+  end if;
+  if not public.job_allows_worker(v_j.id, v_a.seeker_id) then
+    raise exception 'questo ruolo richiede identità verificata e il candidato non è verificato';
   end if;
   insert into public.shifts (job_id, worker_id) values (v_j.id, v_a.seeker_id) returning id into v_new;
   return v_new;
@@ -524,7 +538,8 @@ revoke all on function public.my_role(), public.is_job_employer(uuid), public.in
   public.standby_pool_size(uuid), public.buy_guarantee(uuid), public.open_standby_slots(),
   public.claim_standby(uuid), public.withdraw_standby(uuid), public.accept_application(uuid),
   public.worker_check(uuid, text, double precision, double precision, text),
-  public.employer_confirm_check(uuid), public.report_no_show(uuid), public.close_guarantees()
+  public.employer_confirm_check(uuid), public.report_no_show(uuid), public.close_guarantees(),
+  public.is_verified(uuid), public.job_requires_verification(uuid), public.job_allows_worker(uuid, uuid)
   from public, anon, authenticated;
 
 grant execute on function public.my_role(), public.is_job_employer(uuid), public.involved_in_job(uuid),

@@ -29,10 +29,11 @@
 --  * Il punteggio non usa foto, età, genere, nome o altri dati sensibili.
 --
 -- PUNTEGGIO (0-100), visibile nel campo "breakdown":
---   città uguale a quella dell'evento ......... 30
---   esperienza nello stesso ruolo (max 10 turni) 30
+--   città uguale a quella dell'evento ......... 25
+--   esperienza nello stesso ruolo (max 10 turni) 25
 --   affidabilità (completati / no-show / ritardi) 30  (chi è nuovo parte da 24)
 --   si è candidato all'annuncio (solo turni) .. 10
+--   identità verificata (certificazione valida) 10
 -- =====================================================================
 
 -- 1) CAMPI NUOVI ---------------------------------------------------------
@@ -210,7 +211,7 @@ create function public.rank_candidates(p_job uuid, p_reserve boolean default fal
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
                applied boolean, offer_status text, score int, breakdown jsonb,
-               annotation text, annotation_note text)
+               annotation text, annotation_note text, verified boolean)
 language sql stable security definer set search_path = public as $$
   with j as (
     select jb.id, jb.employer_id, jb.role_code, jb.starts_at, jb.ends_at, e.city as ev_city
@@ -252,10 +253,11 @@ language sql stable security definer set search_path = public as $$
   ),
   scored as (
     select s.*,
-      case when lower(s.city) = lower(j.ev_city) then 30 else 0 end as p_city,
-      round(30 * least(s.done_role, 10) / 10.0)::int as p_exp,
+      case when lower(s.city) = lower(j.ev_city) then 25 else 0 end as p_city,
+      round(25 * least(s.done_role, 10) / 10.0)::int as p_exp,
       round(30 * (s.done + 4.0) / (s.done + 5.0 + 3 * s.ns + 0.5 * s.lt))::int as p_rel,
-      case when s.applied then 10 else 0 end as p_int
+      case when s.applied then 10 else 0 end as p_int,
+      case when public.is_verified(s.id) then 10 else 0 end as p_ver
     from stats s cross join j
   )
   select sc.id, public._display_name(sc.id), sc.city, sc.bio,
@@ -263,10 +265,10 @@ language sql stable security definer set search_path = public as $$
                    from public.worker_roles r where r.worker_id = sc.id), '{}'),
          sc.done, sc.done_role, sc.ns, sc.lt, sc.applied,
          (select o.status from public.offers o where o.job_id = p_job and o.worker_id = sc.id),
-         sc.p_city + sc.p_exp + sc.p_rel + sc.p_int,
+         sc.p_city + sc.p_exp + sc.p_rel + sc.p_int + sc.p_ver,
          jsonb_build_object('citta', sc.p_city, 'esperienza', sc.p_exp,
-                            'affidabilita', sc.p_rel, 'interesse', sc.p_int),
-         n.kind, n.note
+                            'affidabilita', sc.p_rel, 'interesse', sc.p_int, 'verificato', sc.p_ver),
+         n.kind, n.note, public.is_verified(sc.id)
   from scored sc
   left join public.worker_notes n
          on n.worker_id = sc.id
@@ -303,6 +305,10 @@ begin
   else
     v_body := v_body || ' Paga: ' || (v_j.shift_pay_cents / 100.0)::numeric(10,2) || ' €.';
   end if;
+  if public.job_requires_verification(p_job) then
+    v_body := v_body || ' Richiede identità verificata.';
+    v_payload := v_payload || jsonb_build_object('richiede_verifica', true);
+  end if;
   v_org := public.organizer_summary(v_j.employer_id);
   if v_org ? 'nuovo' then
     v_payload := v_payload || jsonb_build_object('organizzatore', v_org);
@@ -322,7 +328,7 @@ create function public.match_workers(p_job uuid, p_limit int default 50)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
                applied boolean, offer_status text, score int, breakdown jsonb,
-               annotation text, annotation_note text)
+               annotation text, annotation_note text, verified boolean)
 language sql stable security definer set search_path = public as $$
   select * from public.rank_candidates(p_job, false)
   where public.is_job_employer(p_job)
@@ -334,7 +340,7 @@ create function public.match_reserves(p_job uuid, p_limit int default 50)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
                applied boolean, offer_status text, score int, breakdown jsonb,
-               annotation text, annotation_note text)
+               annotation text, annotation_note text, verified boolean)
 language sql stable security definer set search_path = public as $$
   select * from public.rank_candidates(p_job, true)
   where public.is_job_employer(p_job)
@@ -427,6 +433,8 @@ begin
     update public.offers set status = 'scaduta', responded_at = now() where id = v_o.id;
     return 'scaduta';
   end if;
+  -- ruolo riservato a persone con identità verificata: la proposta resta in attesa
+  if not public.job_allows_worker(v_o.job_id, auth.uid()) then return 'serve_verifica'; end if;
 
   if v_o.kind = 'turno' then
     select * into v_j from public.jobs where id = v_o.job_id for update;

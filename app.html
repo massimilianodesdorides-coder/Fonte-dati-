@@ -99,7 +99,7 @@ input[type=checkbox]{width:auto;min-height:0}
 .chip{border:1px solid var(--line);background:var(--card);border-radius:99px;padding:5px 12px;cursor:pointer;font-size:13.5px}
 .chip.on{background:var(--brand);color:var(--brand-ink);border-color:var(--brand)}
 .score{font:700 17px var(--fd);background:var(--soft);color:var(--brand);border-radius:10px;padding:2px 10px;font-variant-numeric:tabular-nums}
-.mini{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.mini{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:8px}
 .mini div{font-size:11.5px;color:var(--muted)}
 .mini .bar{margin-top:3px}
 .seg{display:flex;gap:4px;margin:10px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px}
@@ -159,6 +159,7 @@ const $$ = (s, e = document) => [...e.querySelectorAll(s)];
 const D = t => new Date(t);
 const fDay = t => new Intl.DateTimeFormat('it-IT', { weekday: 'long', day: 'numeric', month: 'long' }).format(D(t));
 const fShort = t => new Intl.DateTimeFormat('it-IT', { weekday: 'short', day: 'numeric', month: 'short' }).format(D(t));
+const fFull = t => new Intl.DateTimeFormat('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }).format(D(t));
 const fTime = t => new Intl.DateTimeFormat('it-IT', { hour: '2-digit', minute: '2-digit' }).format(D(t));
 const fDT = t => `${fShort(t)} ${fTime(t)}`;
 const eur = c => (Number(c) / 100).toLocaleString('it-IT', { style: 'currency', currency: 'EUR' });
@@ -226,6 +227,7 @@ function fieldHtml(f) {
 }
 function modal({ title, intro = '', fields = [], body = '', ok = 'Conferma', danger = false, cancel = 'Annulla', hideOk = false }) {
   return new Promise(res => {
+    document.querySelectorAll('.toast').forEach(t => t.remove());
     const ov = document.createElement('div'); ov.className = 'ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true');
     ov.innerHTML = html`<form class="sheet"><h3>${title}</h3>${intro ? html`<p class="muted">${intro}</p>` : ''}${body}${fields.map(fieldHtml)}
       <div class="acts">${hideOk ? '' : html`<button class="btn ${danger ? 'bad' : ''}" type="submit">${ok}</button>`}<button class="btn sec" type="button" data-cancel>${cancel}</button></div></form>`.s;
@@ -336,6 +338,8 @@ const OFFER = { inviata: ['In attesa', 'warn'], accettata: ['Accettata', 'good']
 const badge = (m, k) => { const [l, c] = (m[k] || [k, 'gray']); return html`<span class="badge ${c}">${l}</span>`; };
 const orgLine = o => !o ? '' : o.nuovo ? html`<span class="badge gray">Nuovo organizzatore</span>`
   : html`<span class="badge ${o.overall >= 4 ? 'good' : o.overall >= 3 ? 'warn' : 'bad'}">Organizzatore ${num1(o.overall)}/5</span> <span class="muted sm">${plural(o.n, 'giudizio', 'giudizi')}${o.pagato_puntuale_pct != null ? html`, pagato puntuale ${o.pagato_puntuale_pct}%` : ''}${o.annullamenti_tardivi_12m ? html`, ${plural(o.annullamenti_tardivi_12m, 'annullamento tardivo', 'annullamenti tardivi')}` : ''}</span>`;
+const verBadge = () => html`<span class="badge good">Identità verificata</span>`;
+const reqBadge = () => html`<span class="badge warn">Richiede identità verificata</span>`;
 const empty = t => html`<div class="empty">${t}</div>`;
 const skel = () => html`<div class="sk"></div><div class="sk"></div>`;
 
@@ -346,7 +350,7 @@ const VIEWS = {};
 
 /* ---------- ingresso ---------- */
 VIEWS.welcome = async () => {
-  const users = DEMO ? await S.demo.users() : [];
+  const users = DEMO ? (await S.demo.users()).filter(u => u.ord < 100) : [];
   return html`<div class="hero"><h1>Personale per eventi, senza giri a vuoto</h1>
     <p>Gli organizzatori pubblicano i ruoli, il sistema propone le persone più adatte e copre i no-show con le riserve. Chi lavora sceglie, accetta e si trova tutto in un calendario.</p>
     <div class="acts"><button class="btn" data-act="goto" data-v="register">Registrati</button><button class="btn" data-act="goto" data-v="login">Accedi</button></div></div>
@@ -378,6 +382,7 @@ VIEWS.public = async code => {
   return html`<div class="hero"><h1>${p.evento.nome}</h1><p>${p.evento.citta}, ${fDay(p.evento.data)}</p></div>
     <h2>Ruoli aperti</h2>
     ${p.ruoli.length ? p.ruoli.map(j => html`<div class="card"><div class="row"><div class="grow"><h3>${j.titolo}</h3><div class="muted">${j.azienda}</div></div><span class="badge ${j.posti_liberi ? 'good' : 'gray'}">${j.posti_liberi ? plural(j.posti_liberi, 'posto libero', 'posti liberi') : 'Completo'}</span></div>
+      ${j.richiede_verifica ? html`<div style="margin:4px 0">${reqBadge()}</div>` : ''}
       <p class="sm">${fShort(j.inizio)} · ${fTime(j.inizio)}-${fTime(j.fine)} · ${eur(j.paga_cents)} a persona</p>
       ${j.posti_liberi ? html`<div class="acts"><button class="btn" data-act="applyLink" data-job="${j.job_id}">${S.uid ? 'Candidati' : 'Accedi per candidarti'}</button></div>` : ''}</div>`) : empty('Nessun ruolo aperto al momento.')}
     <p class="small-note">Tutte le risposte arrivano all'organizzatore su Lavoro Facile. I tuoi dati restano nascosti finché non ti candidi.</p>`;
@@ -391,7 +396,7 @@ VIEWS.offers = async () => {
   const { data: offs } = await sb.from('offers').select('*').eq('status', 'inviata').order('expires_at');
   let cards = '';
   if (offs && offs.length) {
-    const jobs = (await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,employer_id,event_id').in('id', offs.map(o => o.job_id))).data || [];
+    const jobs = (await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,employer_id,event_id,require_verified').in('id', offs.map(o => o.job_id))).data || [];
     const evs = (await sb.from('events').select('id,name,city').in('id', [...new Set(jobs.map(j => j.event_id))])).data || [];
     const orgs = {};
     await Promise.all([...new Set(jobs.map(j => j.employer_id))].map(async e => { orgs[e] = (await sb.rpc('organizer_profile', { p_employer: e })).data; }));
@@ -402,6 +407,7 @@ VIEWS.offers = async () => {
       const res = o.kind === 'riserva';
       return html`<div class="card"><div class="row"><div class="grow"><h3>${j.title}</h3><div class="muted">${j.company_name} · ${ev.name || ''}, ${j.city}</div></div>
         <span class="badge ${res ? 'fav' : ''}">${res ? 'Riserva' : 'Turno'}</span></div>
+        ${j.require_verified ? html`<div style="margin-top:6px">${reqBadge()} ${S.profile.verified_until && D(S.profile.verified_until) > new Date() ? verBadge() : html`<span class="muted sm">Dovrai verificarti per accettare.</span>`}</div>` : ''}
         <dl class="kv" style="margin-top:8px"><dt>Quando</dt><dd>${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}</dd>
           <dt>Paga</dt><dd>${eur(j.shift_pay_cents)}${res ? html` se vieni attivata. Se non serve: <b>${eur(Math.round(j.shift_pay_cents * feePct / 100))}</b> per la disponibilità.` : ''}</dd>
           <dt>Rispondi entro</dt><dd><b>${fDT(o.expires_at)}</b></dd></dl>
@@ -423,7 +429,7 @@ VIEWS.offers = async () => {
 
 VIEWS.board = async () => {
   const q = (S.search || '').toLowerCase();
-  const { data: jobs } = await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,event_id,headcount').eq('is_open', true).order('starts_at').limit(60);
+  const { data: jobs } = await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,event_id,headcount,require_verified').eq('is_open', true).order('starts_at').limit(60);
   const list = (jobs || []).filter(j => !q || [j.title, j.city, j.company_name, roleName(j.role_code)].join(' ').toLowerCase().includes(q));
   let slots = [];
   if (isSeeker()) slots = (await sb.rpc('open_standby_slots')).data || [];
@@ -436,7 +442,7 @@ VIEWS.board = async () => {
     <div id="joblist">${list.length ? list.map(jobCard) : empty('Nessun annuncio trovato.')}</div>`;
 };
 const jobCard = j => html`<div class="card" data-act="job" data-id="${j.id}" style="cursor:pointer"><div class="row"><div class="grow"><h3>${j.title}</h3><div class="muted">${j.company_name} · ${j.city}</div></div><span class="badge">${roleName(j.role_code)}</span></div>
-  <p class="sm">${j.starts_at ? html`${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}` : ''}${j.shift_pay_cents ? html` · <b>${eur(j.shift_pay_cents)}</b>` : ''}</p></div>`;
+  <p class="sm">${j.starts_at ? html`${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}` : ''}${j.shift_pay_cents ? html` · <b>${eur(j.shift_pay_cents)}</b>` : ''}</p>${j.require_verified ? html`<div>${reqBadge()}</div>` : ''}</div>`;
 
 VIEWS.job = async id => {
   const { data: j } = await sb.from('jobs').select('*').eq('id', id).maybeSingle();
@@ -448,7 +454,7 @@ VIEWS.job = async id => {
   return html`<button class="btn ghost" data-act="tab" data-v="board">← Annunci</button>
     <div class="card"><div class="row"><div class="grow"><h2 style="margin:0">${j.title}</h2><div class="muted">${j.company_name}${ev ? ' · ' + ev.name : ''}, ${j.city}</div></div><span class="badge">${roleName(j.role_code)}</span></div>
       ${j.starts_at ? html`<dl class="kv" style="margin-top:10px"><dt>Quando</dt><dd>${fDay(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}</dd><dt>Paga</dt><dd>${eur(j.shift_pay_cents)} a persona</dd><dt>Posti</dt><dd>${j.headcount}</dd></dl>` : ''}
-      <p style="white-space:pre-wrap">${j.description}</p><div>${orgLine(org)}</div></div>
+      <p style="white-space:pre-wrap">${j.description}</p>${j.require_verified ? html`<p>${reqBadge()}</p>` : ''}<div>${orgLine(org)}</div></div>
     ${!S.uid ? html`<button class="btn block" data-act="goto" data-v="login">Accedi per candidarti</button>`
       : isOrg() ? html`<p class="muted">Sei registrato come organizzatore: non puoi candidarti.</p>`
       : applied ? html`<div class="card flat"><b>Ti sei già candidato.</b> L'organizzatore vedrà il tuo profilo.</div>`
@@ -487,9 +493,9 @@ VIEWS.calendar = async () => {
 VIEWS.profile = async () => {
   if (!isSeeker()) return VIEWS.orgprofile();
   const p = S.profile;
-  const [mr, av, pref, blocks] = await Promise.all([
+  const [mr, av, pref, blocks, ver] = await Promise.all([
     sb.from('worker_roles').select('role_code'), sb.from('standby_availability').select('*').order('from_at'),
-    sb.from('worker_preferences').select('*').maybeSingle(), sb.rpc('my_blocks')]);
+    sb.from('worker_preferences').select('*').maybeSingle(), sb.rpc('my_blocks'), sb.rpc('my_verification')]);
   const mine = new Set((mr.data || []).map(r => r.role_code));
   const pr = pref.data || { min_organizer_rating: null, allow_new_organizers: true };
   return html`<h2>Il tuo profilo</h2>
@@ -498,6 +504,7 @@ VIEWS.profile = async () => {
       <div><label class="f" for="ph">Telefono (solo dopo un turno accettato)</label><input id="ph" value="${p.phone || ''}" maxlength="30"></div></div>
       <label class="f" for="bio">Presentazione ed esperienze</label><textarea id="bio" maxlength="2000">${p.bio || ''}</textarea>
       <div class="acts"><button class="btn" type="submit">Salva</button></div></form>
+    ${verCard(ver.data)}
     <div class="card"><h3>Cosa sai fare</h3><div class="chips" style="margin-top:8px">${S.roles.map(r => html`<button class="chip ${mine.has(r.code) ? 'on' : ''}" data-act="toggleRole" data-code="${r.code}">${r.label}</button>`)}</div>
       <div class="sep"></div><label class="chk"><input type="checkbox" id="disc" data-act="toggleDisc" ${p.discoverable ? 'checked' : ''}><span><b>Visibile agli organizzatori</b><br><span class="muted">Possono trovarti e proporti turni. Vedono nome abbreviato, città, presentazione ed esperienze. Mai telefono o email.</span></span></label></div>
     <div class="card"><div class="row"><h3>Disponibilità come riserva</h3><button class="btn s sec" data-act="addAvail">Aggiungi</button></div>
@@ -511,6 +518,11 @@ VIEWS.profile = async () => {
       ${(blocks.data || []).length ? html`<div class="sep"></div><b>Organizzatori bloccati</b>${blocks.data.map(b => html`<div class="row" style="padding:6px 0"><span>${b.azienda || 'Organizzatore'}</span><button class="btn ghost s" data-act="unblock" data-emp="${b.employer_id}">Sblocca</button></div>`)}` : ''}</div>
     ${accountCard()}`;
 };
+const verCard = v => !v ? '' : html`<div class="card"><div class="row"><h3>Identità verificata</h3>${v.verificato ? verBadge() : html`<span class="badge gray">Non verificata</span>`}</div>
+  ${v.verificato ? html`<p class="muted">Il tuo bollino è valido fino al <b>${fFull(v.valida_fino_al)}</b>. Ti fa salire nelle classifiche e ti permette di accettare i ruoli riservati a persone verificate.</p>
+      <button class="btn s sec" data-act="verify">Rinnova</button>`
+    : html`<p class="muted">È facoltativa. Con il bollino sali di 10 punti nelle classifiche e puoi accettare i ruoli riservati a persone verificate. Costo ${eur(v.prezzo_cents)} una tantum, valido ${v.mesi} mesi.</p>
+      <button class="btn" data-act="verify">Verifica la mia identità</button>`}</div>`;
 const accountCard = () => html`<div class="card"><h3>Account</h3><p class="muted">${DEMO ? 'Demo' : ''}</p><div class="acts"><button class="btn sec" data-act="privacy">Informativa privacy</button><button class="btn sec" data-act="logout">Esci</button><button class="btn bad" data-act="deleteAccount">Elimina il mio account</button></div></div>`;
 
 /* =====================================================================
@@ -552,7 +564,7 @@ async function evRuoli(ev) {
     const pct = j.headcount ? Math.min(100, Math.round(100 * (o.coperti || 0) / j.headcount)) : 0;
     const gOpen = (gR.data || []).filter(g => g.job_id === j.id && g.status === 'aperta').length;
     return html`<div class="card"><div class="row"><div class="grow"><h3>${j.title}</h3><div class="muted">${roleName(j.role_code)} · ${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)} · ${eur(j.shift_pay_cents)}</div></div>
-        ${!j.is_open && !(o.coperti) ? html`<span class="badge gray">Annullato</span>` : o.ruolo_completo ? html`<span class="badge good">Completo</span>` : html`<span class="badge warn">Da coprire</span>`}</div>
+        ${j.require_verified ? html`<span class="badge good">Solo verificati</span>` : ''}${!j.is_open && !(o.coperti) ? html`<span class="badge gray">Annullato</span>` : o.ruolo_completo ? html`<span class="badge good">Completo</span>` : html`<span class="badge warn">Da coprire</span>`}</div>
       <div style="margin:10px 0 4px" class="row sm"><span>Posti coperti</span><b>${o.coperti || 0}/${j.headcount}</b></div><div class="bar ${o.ruolo_completo ? 'ok' : ''}"><i style="width:${pct}%"></i></div>
       <div class="row sm" style="margin-top:8px"><span>Garanzia no-show</span><b>${o.garanzie || 0} acquistate, ${o.garanzie_coperte || 0} con riserva</b></div>
       <div class="acts">${j.is_open ? html`<button class="btn s" data-act="panel" data-job="${j.id}" data-p="cand">${open === 'cand' ? 'Chiudi candidati' : 'Candidati consigliati'}</button>
@@ -573,10 +585,11 @@ function candCard(c, job, offers, reserveG) {
   const bd = c.breakdown || {};
   const bar = (l, v, m) => html`<div>${l}<div class="bar"><i style="width:${Math.round(100 * v / m)}%"></i></div></div>`;
   const canInvite = !c.offer_status && c.annotation !== 'da_evitare';
-  return html`<div class="card flat"><div class="row"><div class="grow"><b>${c.display_name}</b> ${noteBadge(c)} ${c.applied ? html`<span class="badge">Si è candidato</span>` : ''}
+  return html`<div class="card flat"><div class="row"><div class="grow"><b>${c.display_name}</b> ${c.verified ? verBadge() : ''} ${noteBadge(c)} ${c.applied ? html`<span class="badge">Si è candidato</span>` : ''}
       <div class="muted sm">${c.city || 'Città non indicata'} · ${plural(c.completed_same_role, 'turno', 'turni')} come ${roleName(job.role_code).toLowerCase()} · ${plural(c.no_shows, 'no-show', 'no-show')} · ${plural(c.lates, 'ritardo', 'ritardi')}</div></div>
       <span class="score" title="Punteggio di adeguatezza">${c.score}</span></div>
-    <div class="mini">${bar('Città', bd.citta || 0, 30)}${bar('Esperienza', bd.esperienza || 0, 30)}${bar('Affidabilità', bd.affidabilita || 0, 30)}${bar('Interesse', bd.interesse || 0, 10)}</div>
+    <div class="mini">${bar('Città', bd.citta || 0, 25)}${bar('Esperienza', bd.esperienza || 0, 25)}${bar('Affidabilità', bd.affidabilita || 0, 30)}${bar('Interesse', bd.interesse || 0, 10)}${bar('Verifica', bd.verificato || 0, 10)}</div>
+    ${job.require_verified && !c.verified ? html`<p class="small-note">Non è verificato: per accettare dovrà prima verificarsi (a suo carico).</p>` : ''}
     ${c.bio ? html`<p class="sm" style="margin-top:8px">${c.bio}</p>` : ''}${c.annotation_note ? html`<p class="small-note">Tua nota: ${c.annotation_note}</p>` : ''}
     <div class="acts">${canInvite ? html`<button class="btn s" data-act="${reserveG ? 'inviteRes' : 'invite'}" data-job="${job.id}" data-worker="${c.worker_id}" ${attr('data-g', reserveG)}>Invita${reserveG ? ' come riserva' : ''}</button>` : ''}
       ${c.offer_status ? badge(OFFER, c.offer_status) : ''}${off ? html`<button class="btn s ghost" data-act="withdrawOffer" data-id="${off.id}">Ritira</button>` : ''}
@@ -586,7 +599,7 @@ function candCard(c, job, offers, reserveG) {
 async function panelCandidates(j, offers) {
   const { data, error } = await sb.rpc('match_workers', { p_job: j.id, p_limit: 30 });
   if (error) return html`<p class="err">${HERR(error)}</p>`;
-  return html`<div class="sep"></div><b>Candidati consigliati</b><p class="muted sm">Ordinati per adeguatezza. Preferiti in cima, "da evitare" in fondo. Il punteggio usa città, esperienza e affidabilità: mai foto, età o genere.</p>
+  return html`<div class="sep"></div><b>Candidati consigliati</b><p class="muted sm">Ordinati per adeguatezza. Preferiti in cima, "da evitare" in fondo. Il punteggio usa città, esperienza, affidabilità e identità verificata: mai foto, età o genere.</p>
     ${data.length ? data.map(c => candCard(c, j, offers, null)) : empty('Nessun candidato trovato per questo ruolo. Condividi il link dell\'evento su altri canali dalla scheda "Canali".')}`;
 }
 async function panelReserves(j, gs, offers) {
@@ -599,10 +612,10 @@ async function panelReserves(j, gs, offers) {
 async function panelApps(j) {
   const { data: apps } = await sb.from('applications').select('id,seeker_id,message,created_at').eq('job_id', j.id);
   const ids = (apps || []).map(a => a.seeker_id);
-  const ps = ids.length ? (await sb.from('profiles').select('id,full_name,city,bio').in('id', ids)).data || [] : [];
+  const ps = ids.length ? (await sb.from('profiles').select('id,full_name,city,bio,verified_until').in('id', ids)).data || [] : [];
   const shifts = ids.length ? (await sb.from('shifts').select('worker_id,status').eq('job_id', j.id)).data || [] : [];
   return html`<div class="sep"></div><b>Candidature ricevute</b>${(apps || []).length ? apps.map(a => { const p = ps.find(x => x.id === a.seeker_id) || {}; const hired = shifts.some(s => s.worker_id === a.seeker_id && s.status !== 'annullato');
-    return html`<div class="card flat"><div class="row"><div class="grow"><b>${p.full_name || 'Candidato'}</b><div class="muted sm">${p.city || ''} · ${fShort(a.created_at)}</div></div>
+    return html`<div class="card flat"><div class="row"><div class="grow"><b>${p.full_name || 'Candidato'}</b> ${p.verified_until && D(p.verified_until) > new Date() ? verBadge() : ''}<div class="muted sm">${p.city || ''} · ${fShort(a.created_at)}</div></div>
       ${hired ? html`<span class="badge good">Assegnato</span>` : html`<button class="btn s" data-act="accept" data-id="${a.id}">Accetta</button>`}</div>
       ${a.message ? html`<p class="sm">"${a.message}"</p>` : ''}${p.bio ? html`<p class="muted sm">${p.bio}</p>` : ''}</div>`; }) : empty('Nessuna candidatura ricevuta.')}`;
 }
@@ -673,7 +686,9 @@ A.demoLogin = async el => { S.demo.loginAs(el.dataset.id); await loadSession(); 
 A.demoTools = async () => {
   const users = await S.demo.users();
   const r = await modal({ title: 'Strumenti demo', intro: 'Per provare l\'app da più punti di vista e far scorrere il tempo.', hideOk: true, cancel: 'Chiudi',
-    body: html`<label class="f">Cambia utente</label><div class="chips">${users.map(u => html`<button type="button" class="chip ${S.uid === u.id ? 'on' : ''}" data-dt="login" data-id="${u.id}">${u.label}</button>`)}</div>
+    body: html`<label class="f">Cambia utente</label><div class="chips">${users.filter(u => u.ord < 100).map(u => html`<button type="button" class="chip ${S.uid === u.id ? 'on' : ''}" data-dt="login" data-id="${u.id}">${u.label}</button>`)}</div>
+      ${users.some(u => u.ord >= 100) ? html`<select data-dtsel style="margin-top:8px" aria-label="Altri utenti di prova"><option value="">Altri utenti di prova (${users.filter(u => u.ord >= 100).length})…</option>${users.filter(u => u.ord >= 100).map(u => html`<option value="${u.id}">${u.label}: ${u.descr}</option>`)}</select>` : ''}
+      <label class="f">Utenti finti per i test</label><div class="acts" style="margin-top:0"><button type="button" class="btn s sec" data-dt="gen">Aggiungi 20 lavoratori di prova</button><button type="button" class="btn s sec" data-dt="purge">Rimuovi i lavoratori di prova</button></div>
       <label class="f">Far scorrere il tempo</label><div class="acts" style="margin-top:0">
         <button type="button" class="btn s sec" data-dt="start">Fai iniziare il prossimo evento (30 min fa)</button>
         <button type="button" class="btn s sec" data-dt="end">Fai finire gli eventi in corso</button>
@@ -688,6 +703,8 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('[data-dt]'); if (!b) return;
   const k = b.dataset.dt, ov = b.closest('.ov');
   try {
+    if (k === 'gen') { toast(`Creati ${await S.demo.generateWorkers(20)} lavoratori di prova.`); ov.remove(); await render(); return; }
+    if (k === 'purge') { toast(`Rimossi ${await S.demo.purgeTest()} utenti di prova.`); ov.remove(); await render(); return; }
     if (k === 'login') { S.demo.loginAs(b.dataset.id); await loadSession(); ov.remove(); await go(home()); return; }
     if (k === 'start') toast((await S.demo.startNextEvent()) ? 'Il prossimo evento è iniziato da 30 minuti.' : 'Nessun evento in arrivo.');
     if (k === 'end') { await S.demo.endRunningEvents(); toast('Gli eventi in corso sono finiti.'); }
@@ -699,6 +716,34 @@ document.addEventListener('click', async e => {
   } catch (err) { toast(err.message, true); }
 });
 
+async function verifyFlow(reason = '') {
+  const info = (await sb.rpc('my_verification')).data || {};
+  if (info.verificato) return true;
+  const go_ = await modal({ title: 'Verifica la tua identità', intro: reason,
+    body: html`<dl class="kv" style="margin:8px 0"><dt>Costo</dt><dd><b>${eur(info.prezzo_cents)}</b> una tantum, a tuo carico</dd><dt>Validità</dt><dd>${info.mesi} mesi, poi si rinnova</dd><dt>Cosa serve</dt><dd>un documento e un selfie, con un fornitore specializzato</dd></dl>
+      <p class="small-note">Non conserviamo documenti né foto di identificazione: restano al fornitore. Noi sappiamo solo che sei verificato e fino a quando.</p>`,
+    ok: `Paga ${eur(info.prezzo_cents)} e verifica` });
+  if (!go_) return false;
+  const st = await call(sb.rpc('start_verification')); if (!st.ok) return false;
+  if (!DEMO) { await modal({ title: 'Richiesta registrata', intro: 'Il collegamento con il fornitore di identità non è ancora attivo: vedi la guida (Edge Function e webhook).', hideOk: true, cancel: 'Chiudi' }); return false; }
+  const r = await modal({ title: 'Fornitore di identità (simulazione)', intro: 'In produzione qui il lavoratore paga, scatta il selfie e fotografa il documento. In demo scegli tu l\'esito.', ok: 'Invia esito',
+    fields: [{ name: 'o', type: 'select', label: 'Esito della verifica', options: [['ok', 'Documento valido'], ['rifiutata', 'Documento non valido']] }] });
+  if (!r) return false;
+  await S.demo.completeVerification(st.data, r.o); await loadSession();
+  return !!(S.profile.verified_until && D(S.profile.verified_until) > new Date());
+}
+A.verify = async () => { if (await verifyFlow()) { toast('Identità verificata: hai il bollino.'); render(); } else render(); };
+const needsVerify = m => /identità verificata/i.test(m || '');
+async function withVerify(makeCall, reason) {
+  let x = await makeCall();
+  if (x.error && needsVerify(x.error.message)) {
+    if (!(await verifyFlow(reason))) { toast('Senza verifica non puoi accettare questo ruolo.', true); return { ok: false, data: null }; }
+    x = await makeCall();
+  }
+  if (x.error) { toast(HERR(x.error), true); return { ok: false, data: null }; }
+  return { ok: true, data: x.data };
+}
+
 A.logout = async () => { await sb.auth.signOut(); S.uid = null; S.profile = null; await go('welcome'); };
 A.deleteAccount = async () => {
   const r = await modal({ title: 'Eliminare l\'account?', intro: 'Cancelliamo in modo definitivo profilo, turni, candidature e giudizi. Non si può annullare.', ok: 'Elimina per sempre', danger: true });
@@ -709,7 +754,11 @@ A.deleteAccount = async () => {
 /* lavoratore */
 A.respond = async el => {
   const yes = el.dataset.yes === '1';
-  const x = await call(sb.rpc('respond_offer', { p_offer: el.dataset.id, p_accept: yes })); if (!x.ok) return;
+  let x = await call(sb.rpc('respond_offer', { p_offer: el.dataset.id, p_accept: yes })); if (!x.ok) return;
+  if (x.data === 'serve_verifica') {
+    if (!(await verifyFlow('Questo ruolo è riservato a persone con identità verificata.'))) return toast('La proposta resta in attesa: puoi accettarla dopo la verifica.');
+    x = await call(sb.rpc('respond_offer', { p_offer: el.dataset.id, p_accept: yes })); if (!x.ok) return;
+  }
   const msg = { accettata: 'Fatto: è nel tuo calendario.', rifiutata: 'Proposta rifiutata.', scaduta: 'La proposta era scaduta.', posti_esauriti: 'Troppo tardi: i posti sono già coperti.', non_piu_necessaria: 'La riserva non serve più.', non_disponibile: 'Hai già un impegno in quella fascia.' }[x.data] || x.data;
   toast(msg, ['scaduta', 'posti_esauriti', 'non_disponibile', 'non_piu_necessaria'].includes(x.data)); render();
 };
@@ -719,18 +768,19 @@ A.block = async el => {
 };
 A.unblock = async el => { if ((await call(sb.rpc('unblock_organizer', { p_employer: el.dataset.emp }), 'Sbloccato.')).ok) render(); };
 A.withdrawApp = async el => { if ((await call(sb.from('applications').delete().eq('id', el.dataset.id), 'Candidatura ritirata.')).ok) render(); };
-A.claim = async el => { if ((await call(sb.rpc('claim_standby', { p_guarantee: el.dataset.id }), 'Sei riserva per questo evento.')).ok) render(); };
+A.claim = async el => { const x = await withVerify(() => sb.rpc('claim_standby', { p_guarantee: el.dataset.id }), 'Questo ruolo è riservato a persone con identità verificata.'); if (x.ok) { toast('Sei riserva per questo evento.'); render(); } };
 A.job = el => go('job', el.dataset.id);
 A.applyJob = async el => {
   const r = await modal({ title: 'Candidati', fields: [{ name: 'm', type: 'textarea', label: 'Messaggio per l\'organizzatore (facoltativo)', max: 500 }], ok: 'Invia candidatura' }); if (!r) return;
-  const x = await call(sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: null }), 'Candidatura inviata.'); if (x.ok) render();
+  const x = await withVerify(() => sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: null }), 'Questo ruolo è riservato a persone con identità verificata.');
+  if (x.ok) { toast('Candidatura inviata.'); render(); }
 };
 A.applyLink = async el => {
   if (!S.uid) { toast('Accedi o registrati per candidarti.'); return go('register'); }
   if (!isSeeker()) return toast('Solo chi cerca lavoro può candidarsi.', true);
   const r = await modal({ title: 'Candidati', fields: [{ name: 'm', type: 'textarea', label: 'Messaggio per l\'organizzatore (facoltativo)', max: 500 }], ok: 'Invia candidatura' }); if (!r) return;
-  const x = await call(sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: S.linkCode }), 'Candidatura inviata.');
-  if (x.ok) go('offers');
+  const x = await withVerify(() => sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: S.linkCode }), 'Questo ruolo è riservato a persone con identità verificata.');
+  if (x.ok) { toast('Candidatura inviata.'); go('offers'); }
 };
 A.checkin = async el => {
   const r = await modal({ title: 'Check-in', intro: 'Scatta un selfie: l\'organizzatore lo vede per confermare che sei tu.', fields: [{ name: 'f', type: 'file', label: 'Selfie', capture: true, required: !DEMO }], ok: 'Invia check-in' }); if (!r) return;
@@ -803,10 +853,11 @@ A.newRole = async el => {
     { name: 'd', type: 'textarea', label: 'Descrizione', required: true, max: 2000 },
     { name: 'h', type: 'number', label: 'Persone richieste', value: 2, min: 1, max: 100, required: true }, { name: 'p', type: 'number', label: 'Paga a persona per il turno (€)', value: 80, min: 1, step: '0.5', required: true },
     { name: 'a', type: 'datetime-local', label: 'Inizio', value: toLocalInput(s), required: true }, { name: 'b', type: 'datetime-local', label: 'Fine', value: toLocalInput(e), required: true },
+    { name: 'ver', type: 'checkbox', label: 'Solo persone con identità verificata (la verifica è a carico del lavoratore e vale 12 mesi)' },
     { name: 'auto', type: 'checkbox', label: 'Scelta automatica: il sistema propone il ruolo ai migliori candidati' }] }); if (!r) return;
   if (D(r.b) <= D(r.a)) return toast('La fine deve essere dopo l\'inizio.', true);
   const x = await call(sb.from('jobs').insert({ employer_id: S.uid, company_name: S.profile.full_name, title: r.t, description: r.d, city: ev.city, event_id: ev.id, role_code: r.role,
-    headcount: Number(r.h), shift_pay_cents: Math.round(Number(r.p) * 100), starts_at: D(r.a).toISOString(), ends_at: D(r.b).toISOString() }).select('id'), 'Ruolo pubblicato.');
+    headcount: Number(r.h), shift_pay_cents: Math.round(Number(r.p) * 100), starts_at: D(r.a).toISOString(), ends_at: D(r.b).toISOString(), require_verified: !!r.ver }).select('id'), 'Ruolo pubblicato.');
   if (!x.ok) return;
   if (r.auto) await call(sb.rpc('enable_auto_select', { p_job: x.data[0].id }), 'Scelta automatica attiva: inviti partiti.');
   S.open[x.data[0].id] = 'cand'; render();
@@ -861,6 +912,7 @@ A.notif = async el => {
   const { data: n } = await sb.from('notifications').select('*').eq('id', el.dataset.id).maybeSingle(); if (!n) return;
   if (!n.read_at) await sb.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', n.id);
   const k = n.kind;
+  if (/^verifica_/.test(k)) return go('profile');
   if (/^proposta_(turno|riserva|in_scadenza|scaduta|ritirata)$/.test(k)) return go('offers');
   if (/^(turno_assegnato|sostituzione_attivata|turno_annullato|riserva_annullata)$/.test(k)) return go('calendar');
   let evId = n.payload && n.payload.event_id;
@@ -905,6 +957,8 @@ document.addEventListener('click', async e => {
   try { await fn(el); } catch (err) { toast(err.message || String(err), true); }
 });
 document.addEventListener('change', async e => {
+  const sel = e.target.closest('select[data-dtsel]');
+  if (sel && sel.value) { S.demo.loginAs(sel.value); await loadSession(); sel.closest('.ov').remove(); await go(home()); return; }
   const el = e.target.closest('input[data-act],select[data-act]'); if (!el) return;
   try { await A[el.dataset.act](el); } catch (err) { toast(err.message || String(err), true); }
 });

@@ -88,6 +88,7 @@ language sql stable security definer set search_path = public as $$
       select jsonb_agg(jsonb_build_object(
                'job_id', j.id, 'ruolo', j.role_code, 'titolo', j.title, 'azienda', j.company_name,
                'paga_cents', j.shift_pay_cents, 'inizio', j.starts_at, 'fine', j.ends_at,
+               'richiede_verifica', public.job_requires_verification(j.id),
                'posti_liberi', greatest(j.headcount - (
                   select count(*) from public.shifts s
                   where s.job_id = j.id and s.status in ('assegnato','confermato','completato')), 0))
@@ -108,6 +109,9 @@ begin
   end if;
   select * into v_j from public.jobs where id = p_job and is_open;
   if not found then raise exception 'annuncio non disponibile'; end if;
+  if not public.job_allows_worker(p_job, auth.uid()) then
+    raise exception 'questo ruolo richiede identità verificata: verificati dal tuo profilo';
+  end if;
   if p_link_code is not null then
     select id into v_link from public.event_links where code = p_link_code and event_id = v_j.event_id;
   end if;

@@ -46,7 +46,8 @@ alter default privileges in schema public grant all on tables to anon, authentic
 alter default privileges in schema public grant all on functions to anon, authenticated;
 """
 files = ['schema.sql', 'schema_fase2.sql', 'schema_fase2b_matching.sql', 'schema_fase2c_calendario.sql',
-         'schema_fase2d_evento_completo.sql', 'schema_fase2e_canali_scheda.sql', 'schema_fase2f_rating_organizzatori.sql']
+         'schema_fase2d_evento_completo.sql', 'schema_fase2e_canali_scheda.sql', 'schema_fase2f_rating_organizzatori.sql',
+         'schema_fase2g_verifica_identita.sql', 'tools/test_utenti.sql']
 sqls = [{'name': 'stub', 'sql': STUB}] + [{'name': f, 'sql': rd(f)} for f in files] + [{'name': 'seed', 'sql': seed}]
 sqljson = json.dumps(sqls).replace('<', '\\u003c')
 

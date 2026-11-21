@@ -118,4 +118,9 @@ insert into demo_users (id, label, descr, ord) values
  ('b0000000-0000-4000-8000-000000000006', 'Giulia Garbata', 'Hostess e servizio ai tavoli', 7),
  ('b0000000-0000-4000-8000-000000000007', 'Luca Libero', 'Barman e sala', 8);
 
+-- bollino di identità: alcuni lavoratori sono già verificati; il ruolo di hostess del Gala lo richiede
+update profiles set verified_until = now() + interval '12 months', verification_level = 'forte'
+ where full_name in ('Marco Esperto', 'Hilda Hostess', 'Luca Libero');
+update jobs set require_verified = true where id = 'c1000000-0000-4000-8000-000000000002';
+
 delete from notifications;
