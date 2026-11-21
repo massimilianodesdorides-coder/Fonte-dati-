@@ -88,7 +88,7 @@ language sql stable security definer set search_path = public as $$
       select jsonb_agg(jsonb_build_object(
                'job_id', j.id, 'ruolo', j.role_code, 'titolo', j.title, 'azienda', j.company_name,
                'paga_cents', j.shift_pay_cents, 'inizio', j.starts_at, 'fine', j.ends_at,
-               'richiede_verifica', public.job_requires_verification(j.id),
+               'verifica', public.job_min_verification(j.id),
                'posti_liberi', greatest(j.headcount - (
                   select count(*) from public.shifts s
                   where s.job_id = j.id and s.status in ('assegnato','confermato','completato')), 0))
@@ -146,7 +146,8 @@ returns table (job_id uuid, role_code text, job_title text, kind text, shift_id 
                check_in_id uuid, check_in_at timestamptz, check_in_confirmed_at timestamptz,
                selfie_path text,
                check_out_id uuid, check_out_at timestamptz, check_out_confirmed_at timestamptz,
-               minutes_late int, can_report_no_show boolean)
+               minutes_late int, can_report_no_show boolean,
+               worker_photo text, identity_outcome text)
 language sql stable security definer set search_path = public as $$
   with st as (select * from public.platform_settings)
   select j.id, j.role_code, j.title, 'turno'::text, s.id, s.worker_id, p.full_name, s.status, s.is_replacement,
@@ -160,7 +161,8 @@ language sql stable security definer set search_path = public as $$
               else 0 end,
          (s.status = 'assegnato' and ci.id is null
           and now() >= coalesce(s.expected_by, j.starts_at)
-                       + make_interval(mins => (select noshow_grace_min from st)))
+                       + make_interval(mins => (select noshow_grace_min from st))),
+         public.profile_photo_of(s.worker_id), public.identity_outcome_of(s.id)
   from public.jobs j
   join public.events e on e.id = j.event_id
   join public.shifts s on s.job_id = j.id and s.status <> 'annullato'
@@ -172,7 +174,7 @@ language sql stable security definer set search_path = public as $$
   select j.id, j.role_code, j.title, 'riserva'::text, null::uuid, sa.worker_id,
          public._display_name(sa.worker_id), sa.status, false, j.starts_at,
          null::uuid, null::timestamptz, null::timestamptz, null::text,
-         null::uuid, null::timestamptz, null::timestamptz, 0, false
+         null::uuid, null::timestamptz, null::timestamptz, 0, false, null::text, null::text
   from public.standby_assignments sa
   join public.jobs j on j.id = sa.job_id
   join public.events e on e.id = j.event_id

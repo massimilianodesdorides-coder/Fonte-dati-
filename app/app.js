@@ -125,6 +125,7 @@ async function loadSession() {
     const r = await sb.from('profiles').select('*').eq('id', S.uid).maybeSingle();
     S.profile = r.data;
     const st = await sb.from('platform_settings').select('*').maybeSingle(); S.settings = st.data;
+    S.trust = S.profile && S.profile.role === 'seeker' ? (await sb.rpc('my_trust')).data : null;
   }
 }
 function home() { return !S.profile ? 'welcome' : isOrg() ? 'events' : 'offers'; }
@@ -185,6 +186,7 @@ async function render() {
   $('#app').innerHTML = shell(inner).s;
   window.scrollTo(0, y);
   refreshBadge();
+  hydrateImages();
 }
 function startTick() {
   setInterval(async () => {
@@ -201,8 +203,29 @@ const OFFER = { inviata: ['In attesa', 'warn'], accettata: ['Accettata', 'good']
 const badge = (m, k) => { const [l, c] = (m[k] || [k, 'gray']); return html`<span class="badge ${c}">${l}</span>`; };
 const orgLine = o => !o ? '' : o.nuovo ? html`<span class="badge gray">Nuovo organizzatore</span>`
   : html`<span class="badge ${o.overall >= 4 ? 'good' : o.overall >= 3 ? 'warn' : 'bad'}">Organizzatore ${num1(o.overall)}/5</span> <span class="muted sm">${plural(o.n, 'giudizio', 'giudizi')}${o.pagato_puntuale_pct != null ? html`, pagato puntuale ${o.pagato_puntuale_pct}%` : ''}${o.annullamenti_tardivi_12m ? html`, ${plural(o.annullamenti_tardivi_12m, 'annullamento tardivo', 'annullamenti tardivi')}` : ''}</span>`;
-const verBadge = () => html`<span class="badge good">Identità verificata</span>`;
-const reqBadge = () => html`<span class="badge warn">Richiede identità verificata</span>`;
+const MIN_LABEL = { base: 'verifica di base', forte: 'identità certificata (documento)' };
+const LEVEL = { nessuna: 0, base: 1, forte: 2 };
+const myLevel = () => LEVEL[(S.trust && S.trust.livello) || 'nessuna'];
+const reqBadge = m => (m && m !== 'nessuna') ? html`<span class="badge warn">Richiede ${MIN_LABEL[m]}</span>` : '';
+const lvBadge = t => !t ? '' : t.livello === 'forte' ? html`<span class="badge good">Identità certificata</span>` : t.livello === 'base' ? html`<span class="badge good">Verifica di base</span>` : '';
+const fieldBadge = t => !t ? '' : t.foto_segnalata ? html`<span class="badge warn">Foto da aggiornare</span>`
+  : t.conferme_sul_campo > 0 ? html`<span class="badge">Foto confermata da ${plural(t.conferme_sul_campo, 'organizzatore', 'organizzatori')}</span>` : '';
+const hue = str => [...str].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
+function avatarSvg(name, kind) {      // immagine di esempio per la demo: la foto vera sta nello storage privato
+  const h = hue(name || '?'), ini = (name || '?').split(/\s+/).map(x => x[0]).slice(0, 2).join('').toUpperCase();
+  const ring = kind === 'selfie' ? `<circle cx="60" cy="60" r="54" fill="none" stroke="#fff" stroke-width="4" stroke-dasharray="6 5"/>` : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" fill="hsl(${h} 45% ${kind === 'selfie' ? 42 : 50}%)"/>${ring}<text x="60" y="72" text-anchor="middle" font-family="sans-serif" font-size="40" font-weight="700" fill="#fff">${ini}</text></svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+const photoImg = (path, name, kind) => !path ? html`<div class="muted sm">Nessuna foto</div>`
+  : html`<img class="avatar" alt="${kind === 'selfie' ? 'Selfie di oggi' : 'Foto del profilo'}" data-bucket="${kind === 'selfie' ? 'checkins' : 'profili'}" data-path="${path}" data-name="${name}" data-kind="${kind}">`;
+async function hydrateImages() {
+  for (const img of document.querySelectorAll('img[data-path]')) {
+    if (DEMO) { img.src = avatarSvg(img.dataset.name, img.dataset.kind); continue; }
+    const r = await sb.storage.from(img.dataset.bucket).createSignedUrl(img.dataset.path, 300);
+    if (r.data) img.src = r.data.signedUrl; else img.alt = 'Immagine non disponibile';
+  }
+}
 const empty = t => html`<div class="empty">${t}</div>`;
 const skel = () => html`<div class="sk"></div><div class="sk"></div>`;
 
@@ -245,9 +268,9 @@ VIEWS.public = async code => {
   return html`<div class="hero"><h1>${p.evento.nome}</h1><p>${p.evento.citta}, ${fDay(p.evento.data)}</p></div>
     <h2>Ruoli aperti</h2>
     ${p.ruoli.length ? p.ruoli.map(j => html`<div class="card"><div class="row"><div class="grow"><h3>${j.titolo}</h3><div class="muted">${j.azienda}</div></div><span class="badge ${j.posti_liberi ? 'good' : 'gray'}">${j.posti_liberi ? plural(j.posti_liberi, 'posto libero', 'posti liberi') : 'Completo'}</span></div>
-      ${j.richiede_verifica ? html`<div style="margin:4px 0">${reqBadge()}</div>` : ''}
+      ${j.verifica && j.verifica !== 'nessuna' ? html`<div style="margin:4px 0">${reqBadge(j.verifica)}</div>` : ''}
       <p class="sm">${fShort(j.inizio)} · ${fTime(j.inizio)}-${fTime(j.fine)} · ${eur(j.paga_cents)} a persona</p>
-      ${j.posti_liberi ? html`<div class="acts"><button class="btn" data-act="applyLink" data-job="${j.job_id}">${S.uid ? 'Candidati' : 'Accedi per candidarti'}</button></div>` : ''}</div>`) : empty('Nessun ruolo aperto al momento.')}
+      ${j.posti_liberi ? html`<div class="acts"><button class="btn" data-act="applyLink" data-job="${j.job_id}" data-min="${j.verifica || 'nessuna'}">${S.uid ? 'Candidati' : 'Accedi per candidarti'}</button></div>` : ''}</div>`) : empty('Nessun ruolo aperto al momento.')}
     <p class="small-note">Tutte le risposte arrivano all'organizzatore su Lavoro Facile. I tuoi dati restano nascosti finché non ti candidi.</p>`;
 };
 
@@ -259,7 +282,7 @@ VIEWS.offers = async () => {
   const { data: offs } = await sb.from('offers').select('*').eq('status', 'inviata').order('expires_at');
   let cards = '';
   if (offs && offs.length) {
-    const jobs = (await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,employer_id,event_id,require_verified').in('id', offs.map(o => o.job_id))).data || [];
+    const jobs = (await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,employer_id,event_id,min_verification').in('id', offs.map(o => o.job_id))).data || [];
     const evs = (await sb.from('events').select('id,name,city').in('id', [...new Set(jobs.map(j => j.event_id))])).data || [];
     const orgs = {};
     await Promise.all([...new Set(jobs.map(j => j.employer_id))].map(async e => { orgs[e] = (await sb.rpc('organizer_profile', { p_employer: e })).data; }));
@@ -270,12 +293,12 @@ VIEWS.offers = async () => {
       const res = o.kind === 'riserva';
       return html`<div class="card"><div class="row"><div class="grow"><h3>${j.title}</h3><div class="muted">${j.company_name} · ${ev.name || ''}, ${j.city}</div></div>
         <span class="badge ${res ? 'fav' : ''}">${res ? 'Riserva' : 'Turno'}</span></div>
-        ${j.require_verified ? html`<div style="margin-top:6px">${reqBadge()} ${S.profile.verified_until && D(S.profile.verified_until) > new Date() ? verBadge() : html`<span class="muted sm">Dovrai verificarti per accettare.</span>`}</div>` : ''}
+        ${j.min_verification && j.min_verification !== 'nessuna' ? html`<div style="margin-top:6px">${reqBadge(j.min_verification)} ${myLevel() >= LEVEL[j.min_verification] ? html`<span class="badge good">Hai già il livello richiesto</span>` : html`<span class="muted sm">Dovrai verificarti per accettare.</span>`}</div>` : ''}
         <dl class="kv" style="margin-top:8px"><dt>Quando</dt><dd>${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}</dd>
           <dt>Paga</dt><dd>${eur(j.shift_pay_cents)}${res ? html` se vieni attivata. Se non serve: <b>${eur(Math.round(j.shift_pay_cents * feePct / 100))}</b> per la disponibilità.` : ''}</dd>
           <dt>Rispondi entro</dt><dd><b>${fDT(o.expires_at)}</b></dd></dl>
         <div style="margin-top:8px">${orgLine(orgs[j.employer_id])}</div>
-        <div class="acts"><button class="btn" data-act="respond" data-id="${o.id}" data-yes="1">Accetta</button><button class="btn sec" data-act="respond" data-id="${o.id}" data-yes="0">Rifiuta</button>
+        <div class="acts"><button class="btn" data-act="respond" data-id="${o.id}" data-yes="1" data-min="${j.min_verification || 'nessuna'}">Accetta</button><button class="btn sec" data-act="respond" data-id="${o.id}" data-yes="0">Rifiuta</button>
           <button class="btn ghost" data-act="block" data-emp="${j.employer_id}" data-name="${j.company_name}">Non voglio più proposte da qui</button></div></div>`;
     });
   }
@@ -292,7 +315,7 @@ VIEWS.offers = async () => {
 
 VIEWS.board = async () => {
   const q = (S.search || '').toLowerCase();
-  const { data: jobs } = await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,event_id,headcount,require_verified').eq('is_open', true).order('starts_at').limit(60);
+  const { data: jobs } = await sb.from('jobs').select('id,title,company_name,city,shift_pay_cents,starts_at,ends_at,role_code,event_id,headcount,min_verification').eq('is_open', true).order('starts_at').limit(60);
   const list = (jobs || []).filter(j => !q || [j.title, j.city, j.company_name, roleName(j.role_code)].join(' ').toLowerCase().includes(q));
   let slots = [];
   if (isSeeker()) slots = (await sb.rpc('open_standby_slots')).data || [];
@@ -301,11 +324,11 @@ VIEWS.board = async () => {
     ${slots.length ? html`<h2>Posti da riserva</h2><p class="muted">Se un lavoratore non si presenta, la riserva prende il suo posto con paga piena. Se non serve, ricevi comunque un compenso.</p>
       ${slots.map(s => html`<div class="card"><div class="row"><div class="grow"><h3>${roleName(s.role_code)} · ${s.event_name}</h3><div class="muted">${s.city}, ${fShort(s.starts_at)}, ${fTime(s.starts_at)}-${fTime(s.ends_at)}</div></div></div>
         <p class="sm">Se non serve: <b>${eur(s.fee_if_unused_cents)}</b>. Se vieni attivata: <b>${eur(s.pay_if_activated_cents)}</b>.</p>
-        <div class="acts"><button class="btn s" data-act="claim" data-id="${s.guarantee_id}">Prendi lo slot</button></div></div>`)}` : ''}
+        <div class="acts"><button class="btn s" data-act="claim" data-id="${s.guarantee_id}" data-min="${s.verifica || 'nessuna'}">Prendi lo slot</button></div></div>`)}` : ''}
     <div id="joblist">${list.length ? list.map(jobCard) : empty('Nessun annuncio trovato.')}</div>`;
 };
 const jobCard = j => html`<div class="card" data-act="job" data-id="${j.id}" style="cursor:pointer"><div class="row"><div class="grow"><h3>${j.title}</h3><div class="muted">${j.company_name} · ${j.city}</div></div><span class="badge">${roleName(j.role_code)}</span></div>
-  <p class="sm">${j.starts_at ? html`${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}` : ''}${j.shift_pay_cents ? html` · <b>${eur(j.shift_pay_cents)}</b>` : ''}</p>${j.require_verified ? html`<div>${reqBadge()}</div>` : ''}</div>`;
+  <p class="sm">${j.starts_at ? html`${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}` : ''}${j.shift_pay_cents ? html` · <b>${eur(j.shift_pay_cents)}</b>` : ''}</p>${reqBadge(j.min_verification) ? html`<div>${reqBadge(j.min_verification)}</div>` : ''}</div>`;
 
 VIEWS.job = async id => {
   const { data: j } = await sb.from('jobs').select('*').eq('id', id).maybeSingle();
@@ -317,11 +340,11 @@ VIEWS.job = async id => {
   return html`<button class="btn ghost" data-act="tab" data-v="board">← Annunci</button>
     <div class="card"><div class="row"><div class="grow"><h2 style="margin:0">${j.title}</h2><div class="muted">${j.company_name}${ev ? ' · ' + ev.name : ''}, ${j.city}</div></div><span class="badge">${roleName(j.role_code)}</span></div>
       ${j.starts_at ? html`<dl class="kv" style="margin-top:10px"><dt>Quando</dt><dd>${fDay(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)}</dd><dt>Paga</dt><dd>${eur(j.shift_pay_cents)} a persona</dd><dt>Posti</dt><dd>${j.headcount}</dd></dl>` : ''}
-      <p style="white-space:pre-wrap">${j.description}</p>${j.require_verified ? html`<p>${reqBadge()}</p>` : ''}<div>${orgLine(org)}</div></div>
+      <p style="white-space:pre-wrap">${j.description}</p>${j.min_verification && j.min_verification !== 'nessuna' ? html`<p>${reqBadge(j.min_verification)}</p>` : ''}<div>${orgLine(org)}</div></div>
     ${!S.uid ? html`<button class="btn block" data-act="goto" data-v="login">Accedi per candidarti</button>`
       : isOrg() ? html`<p class="muted">Sei registrato come organizzatore: non puoi candidarti.</p>`
       : applied ? html`<div class="card flat"><b>Ti sei già candidato.</b> L'organizzatore vedrà il tuo profilo.</div>`
-      : html`<button class="btn block" data-act="applyJob" data-job="${j.id}">Candidati</button><p class="small-note">Candidandoti, l'organizzatore potrà vedere nome, città, presentazione e telefono.</p>`}`;
+      : html`<button class="btn block" data-act="applyJob" data-job="${j.id}" data-min="${j.min_verification || 'nessuna'}">Candidati</button><p class="small-note">Candidandoti, l'organizzatore potrà vedere nome, città, presentazione e telefono.</p>`}`;
 };
 
 VIEWS.calendar = async () => {
@@ -356,9 +379,9 @@ VIEWS.calendar = async () => {
 VIEWS.profile = async () => {
   if (!isSeeker()) return VIEWS.orgprofile();
   const p = S.profile;
-  const [mr, av, pref, blocks, ver] = await Promise.all([
+  const [mr, av, pref, blocks, ver, trust] = await Promise.all([
     sb.from('worker_roles').select('role_code'), sb.from('standby_availability').select('*').order('from_at'),
-    sb.from('worker_preferences').select('*').maybeSingle(), sb.rpc('my_blocks'), sb.rpc('my_verification')]);
+    sb.from('worker_preferences').select('*').maybeSingle(), sb.rpc('my_blocks'), sb.rpc('my_verification'), sb.rpc('my_trust')]);
   const mine = new Set((mr.data || []).map(r => r.role_code));
   const pr = pref.data || { min_organizer_rating: null, allow_new_organizers: true };
   return html`<h2>Il tuo profilo</h2>
@@ -367,7 +390,7 @@ VIEWS.profile = async () => {
       <div><label class="f" for="ph">Telefono (solo dopo un turno accettato)</label><input id="ph" value="${p.phone || ''}" maxlength="30"></div></div>
       <label class="f" for="bio">Presentazione ed esperienze</label><textarea id="bio" maxlength="2000">${p.bio || ''}</textarea>
       <div class="acts"><button class="btn" type="submit">Salva</button></div></form>
-    ${verCard(ver.data)}
+    ${trustCard(trust.data, ver.data)}
     <div class="card"><h3>Cosa sai fare</h3><div class="chips" style="margin-top:8px">${S.roles.map(r => html`<button class="chip ${mine.has(r.code) ? 'on' : ''}" data-act="toggleRole" data-code="${r.code}">${r.label}</button>`)}</div>
       <div class="sep"></div><label class="chk"><input type="checkbox" id="disc" data-act="toggleDisc" ${p.discoverable ? 'checked' : ''}><span><b>Visibile agli organizzatori</b><br><span class="muted">Possono trovarti e proporti turni. Vedono nome abbreviato, città, presentazione ed esperienze. Mai telefono o email.</span></span></label></div>
     <div class="card"><div class="row"><h3>Disponibilità come riserva</h3><button class="btn s sec" data-act="addAvail">Aggiungi</button></div>
@@ -381,11 +404,18 @@ VIEWS.profile = async () => {
       ${(blocks.data || []).length ? html`<div class="sep"></div><b>Organizzatori bloccati</b>${blocks.data.map(b => html`<div class="row" style="padding:6px 0"><span>${b.azienda || 'Organizzatore'}</span><button class="btn ghost s" data-act="unblock" data-emp="${b.employer_id}">Sblocca</button></div>`)}` : ''}</div>
     ${accountCard()}`;
 };
-const verCard = v => !v ? '' : html`<div class="card"><div class="row"><h3>Identità verificata</h3>${v.verificato ? verBadge() : html`<span class="badge gray">Non verificata</span>`}</div>
-  ${v.verificato ? html`<p class="muted">Il tuo bollino è valido fino al <b>${fFull(v.valida_fino_al)}</b>. Ti fa salire nelle classifiche e ti permette di accettare i ruoli riservati a persone verificate.</p>
-      <button class="btn s sec" data-act="verify">Rinnova</button>`
-    : html`<p class="muted">È facoltativa. Con il bollino sali di 10 punti nelle classifiche e puoi accettare i ruoli riservati a persone verificate. Costo ${eur(v.prezzo_cents)} una tantum, valido ${v.mesi} mesi.</p>
-      <button class="btn" data-act="verify">Verifica la mia identità</button>`}</div>`;
+const trow = (label, ok, okText, action, actLabel, warnText) => html`<div class="row" style="padding:7px 0;border-top:1px solid var(--line)"><span>${label}</span>
+  <span>${ok ? html`<span class="badge good">${okText}</span>` : action ? html`${warnText ? html`<span class="badge warn">${warnText}</span> ` : ''}<button class="btn s sec" data-act="${action}">${actLabel}</button>` : html`<span class="badge gray">${okText}</span>`}</span></div>`;
+const trustCard = (t, v) => !t ? '' : html`<div class="card"><div class="row"><h3>Fiducia e verifiche</h3>${lvBadge(t) || html`<span class="badge gray">Nessuna verifica</span>`}</div>
+  <p class="muted">Registrarsi è libero e le verifiche sono facoltative: ti fanno salire in classifica (fiducia <b>${t.punti}/10</b>) e ti aprono i ruoli che le richiedono.</p>
+  ${trow('Email', t.email, 'Confermata', null, '', null)}
+  ${trow('Telefono', t.telefono, 'Confermato', 'verifyPhone', 'Verifica con SMS')}
+  ${trow('Codice fiscale', t.codice_fiscale, 'Congruo con i tuoi dati', 'verifyCf', 'Controlla')}
+  ${trow('Foto del profilo', t.foto && t.foto_valida, 'Valida', 'uploadPhoto', t.foto ? 'Aggiorna' : 'Carica', !t.foto ? '' : t.foto_segnalata ? 'Da aggiornare' : 'Da riconfermare')}
+  ${trow('Confermata da un organizzatore', t.conferme_sul_campo > 0, plural(t.conferme_sul_campo, 'organizzatore', 'organizzatori'), null, '', null)}
+  ${trow('Identità certificata con documento', v && v.verificato, v && v.verificato ? 'Fino al ' + fFull(v.valida_fino_al) : '', 'verify', v && v.verificato ? 'Rinnova' : `Certificati (${eur(v ? v.prezzo_cents : 0)})`)}
+  <div class="sep"></div>
+  <p class="small-note"><b>Come funziona.</b> L'organizzatore vede la tua foto solo dopo che hai un turno con lui, e al check-in la confronta con il tuo selfie. La foto vale 12 mesi: se è datata o non ti somiglia più, aggiornala. Codice fiscale e conferma dell'organizzatore dicono che i dati sono coerenti, non provano l'identità legale: per quella serve il documento (facoltativo, a pagamento).</p></div>`;
 const accountCard = () => html`<div class="card"><h3>Account</h3><p class="muted">${DEMO ? 'Demo' : ''}</p><div class="acts"><button class="btn sec" data-act="privacy">Informativa privacy</button><button class="btn sec" data-act="logout">Esci</button><button class="btn bad" data-act="deleteAccount">Elimina il mio account</button></div></div>`;
 
 /* =====================================================================
@@ -427,7 +457,7 @@ async function evRuoli(ev) {
     const pct = j.headcount ? Math.min(100, Math.round(100 * (o.coperti || 0) / j.headcount)) : 0;
     const gOpen = (gR.data || []).filter(g => g.job_id === j.id && g.status === 'aperta').length;
     return html`<div class="card"><div class="row"><div class="grow"><h3>${j.title}</h3><div class="muted">${roleName(j.role_code)} · ${fShort(j.starts_at)}, ${fTime(j.starts_at)}-${fTime(j.ends_at)} · ${eur(j.shift_pay_cents)}</div></div>
-        ${j.require_verified ? html`<span class="badge good">Solo verificati</span>` : ''}${!j.is_open && !(o.coperti) ? html`<span class="badge gray">Annullato</span>` : o.ruolo_completo ? html`<span class="badge good">Completo</span>` : html`<span class="badge warn">Da coprire</span>`}</div>
+        ${j.min_verification && j.min_verification !== 'nessuna' ? html`<span class="badge good">Richiede ${MIN_LABEL[j.min_verification]}</span>` : ''}${!j.is_open && !(o.coperti) ? html`<span class="badge gray">Annullato</span>` : o.ruolo_completo ? html`<span class="badge good">Completo</span>` : html`<span class="badge warn">Da coprire</span>`}</div>
       <div style="margin:10px 0 4px" class="row sm"><span>Posti coperti</span><b>${o.coperti || 0}/${j.headcount}</b></div><div class="bar ${o.ruolo_completo ? 'ok' : ''}"><i style="width:${pct}%"></i></div>
       <div class="row sm" style="margin-top:8px"><span>Garanzia no-show</span><b>${o.garanzie || 0} acquistate, ${o.garanzie_coperte || 0} con riserva</b></div>
       <div class="acts">${j.is_open ? html`<button class="btn s" data-act="panel" data-job="${j.id}" data-p="cand">${open === 'cand' ? 'Chiudi candidati' : 'Candidati consigliati'}</button>
@@ -448,11 +478,11 @@ function candCard(c, job, offers, reserveG) {
   const bd = c.breakdown || {};
   const bar = (l, v, m) => html`<div>${l}<div class="bar"><i style="width:${Math.round(100 * v / m)}%"></i></div></div>`;
   const canInvite = !c.offer_status && c.annotation !== 'da_evitare';
-  return html`<div class="card flat"><div class="row"><div class="grow"><b>${c.display_name}</b> ${c.verified ? verBadge() : ''} ${noteBadge(c)} ${c.applied ? html`<span class="badge">Si è candidato</span>` : ''}
+  return html`<div class="card flat"><div class="row"><div class="grow"><b>${c.display_name}</b> ${lvBadge(c.trust)} ${fieldBadge(c.trust)} ${noteBadge(c)} ${c.applied ? html`<span class="badge">Si è candidato</span>` : ''}
       <div class="muted sm">${c.city || 'Città non indicata'} · ${plural(c.completed_same_role, 'turno', 'turni')} come ${roleName(job.role_code).toLowerCase()} · ${plural(c.no_shows, 'no-show', 'no-show')} · ${plural(c.lates, 'ritardo', 'ritardi')}</div></div>
       <span class="score" title="Punteggio di adeguatezza">${c.score}</span></div>
-    <div class="mini">${bar('Città', bd.citta || 0, 25)}${bar('Esperienza', bd.esperienza || 0, 25)}${bar('Affidabilità', bd.affidabilita || 0, 30)}${bar('Interesse', bd.interesse || 0, 10)}${bar('Verifica', bd.verificato || 0, 10)}</div>
-    ${job.require_verified && !c.verified ? html`<p class="small-note">Non è verificato: per accettare dovrà prima verificarsi (a suo carico).</p>` : ''}
+    <div class="mini">${bar('Città', bd.citta || 0, 25)}${bar('Esperienza', bd.esperienza || 0, 25)}${bar('Affidabilità', bd.affidabilita || 0, 30)}${bar('Interesse', bd.interesse || 0, 10)}${bar('Fiducia', bd.fiducia || 0, 10)}</div>
+    ${job.min_verification && job.min_verification !== 'nessuna' && LEVEL[(c.trust || {}).livello || 'nessuna'] < LEVEL[job.min_verification] ? html`<p class="small-note">Non ha ancora il livello richiesto (${MIN_LABEL[job.min_verification]}): per accettare dovrà prima verificarsi.</p>` : ''}
     ${c.bio ? html`<p class="sm" style="margin-top:8px">${c.bio}</p>` : ''}${c.annotation_note ? html`<p class="small-note">Tua nota: ${c.annotation_note}</p>` : ''}
     <div class="acts">${canInvite ? html`<button class="btn s" data-act="${reserveG ? 'inviteRes' : 'invite'}" data-job="${job.id}" data-worker="${c.worker_id}" ${attr('data-g', reserveG)}>Invita${reserveG ? ' come riserva' : ''}</button>` : ''}
       ${c.offer_status ? badge(OFFER, c.offer_status) : ''}${off ? html`<button class="btn s ghost" data-act="withdrawOffer" data-id="${off.id}">Ritira</button>` : ''}
@@ -478,7 +508,7 @@ async function panelApps(j) {
   const ps = ids.length ? (await sb.from('profiles').select('id,full_name,city,bio,verified_until').in('id', ids)).data || [] : [];
   const shifts = ids.length ? (await sb.from('shifts').select('worker_id,status').eq('job_id', j.id)).data || [] : [];
   return html`<div class="sep"></div><b>Candidature ricevute</b>${(apps || []).length ? apps.map(a => { const p = ps.find(x => x.id === a.seeker_id) || {}; const hired = shifts.some(s => s.worker_id === a.seeker_id && s.status !== 'annullato');
-    return html`<div class="card flat"><div class="row"><div class="grow"><b>${p.full_name || 'Candidato'}</b> ${p.verified_until && D(p.verified_until) > new Date() ? verBadge() : ''}<div class="muted sm">${p.city || ''} · ${fShort(a.created_at)}</div></div>
+    return html`<div class="card flat"><div class="row"><div class="grow"><b>${p.full_name || 'Candidato'}</b> ${p.verified_until && D(p.verified_until) > new Date() ? html`<span class="badge good">Identità certificata</span>` : ''}<div class="muted sm">${p.city || ''} · ${fShort(a.created_at)}</div></div>
       ${hired ? html`<span class="badge good">Assegnato</span>` : html`<button class="btn s" data-act="accept" data-id="${a.id}">Accetta</button>`}</div>
       ${a.message ? html`<p class="sm">"${a.message}"</p>` : ''}${p.bio ? html`<p class="muted sm">${p.bio}</p>` : ''}</div>`; }) : empty('Nessuna candidatura ricevuta.')}`;
 }
@@ -494,7 +524,12 @@ async function evPresenze(ev) {
         <div class="muted sm">Atteso alle ${fTime(r.expected_at)}</div></div>${badge(SHIFT, r.status)}</div>
       ${r.check_in_at ? html`<p class="sm">Check-in alle <b>${fTime(r.check_in_at)}</b>${r.minutes_late ? html` <span class="badge warn">${r.minutes_late} min di ritardo</span>` : ''} · selfie ricevuto · ${r.check_in_confirmed_at ? 'confermato' : html`<b>in attesa della tua conferma</b>`}</p>` : r.status === 'assegnato' ? html`<p class="sm muted">Nessun check-in ancora.</p>` : ''}
       ${r.check_out_at ? html`<p class="sm">Check-out alle ${fTime(r.check_out_at)} · ${r.check_out_confirmed_at ? 'confermato' : html`<b>in attesa della tua conferma</b>`}</p>` : ''}
-      <div class="acts">${r.check_in_id && !r.check_in_confirmed_at ? html`<button class="btn s" data-act="confirmCheck" data-id="${r.check_in_id}">Conferma check-in</button><button class="btn s ghost" data-act="selfie" data-path="${r.selfie_path}">Vedi selfie</button>` : ''}
+      ${r.identity_outcome === 'non_corrisponde' ? html`<p><span class="badge bad">Segnalato: in verifica</span> <span class="muted sm">Il check-in resta non confermato.</span></p>` : r.identity_outcome === 'foto_datata' ? html`<p><span class="badge warn">Foto datata</span> <span class="muted sm">La persona è stata invitata ad aggiornarla.</span></p>` : ''}
+      ${r.check_in_id && !r.check_in_confirmed_at && !r.identity_outcome ? html`<div class="card flat" style="margin-top:8px"><b>Confronta la persona</b>
+        <div class="two" style="margin-top:8px"><div><div class="muted sm">Foto del profilo</div>${photoImg(r.worker_photo, r.worker_name, 'profilo')}</div><div><div class="muted sm">Selfie di oggi</div>${photoImg(r.selfie_path, r.worker_name, 'selfie')}</div></div>
+        ${DEMO ? html`<p class="small-note">In demo le immagini sono segnaposto: online vedi le foto vere.</p>` : ''}
+        <div class="acts"><button class="btn s" data-act="identity" data-id="${r.check_in_id}" data-o="ok">È la persona</button><button class="btn s sec" data-act="identity" data-id="${r.check_in_id}" data-o="foto_datata">È lei/lui, foto datata</button><button class="btn s bad" data-act="identity" data-id="${r.check_in_id}" data-o="non_corrisponde">Non corrisponde</button></div></div>` : ''}
+      <div class="acts">
         ${r.check_out_id && !r.check_out_confirmed_at ? html`<button class="btn s" data-act="confirmCheck" data-id="${r.check_out_id}">Conferma check-out</button>` : ''}
         ${r.can_report_no_show ? html`<button class="btn s bad" data-act="noshow" data-id="${r.shift_id}" data-name="${r.worker_name}">Segnala no-show</button>` : ''}</div></div>`; })}`)}
     <p class="small-note">Puoi segnalare un no-show solo dopo 15 minuti dall'orario atteso e se non c'è un check-in. Se esiste una riserva, subentra subito.</p>`;
@@ -579,13 +614,13 @@ document.addEventListener('click', async e => {
   } catch (err) { toast(err.message, true); }
 });
 
-async function verifyFlow(reason = '') {
+async function strongFlow(reason = '') {
   const info = (await sb.rpc('my_verification')).data || {};
   if (info.verificato) return true;
-  const go_ = await modal({ title: 'Verifica la tua identità', intro: reason,
+  const go_ = await modal({ title: 'Certifica la tua identità', intro: reason,
     body: html`<dl class="kv" style="margin:8px 0"><dt>Costo</dt><dd><b>${eur(info.prezzo_cents)}</b> una tantum, a tuo carico</dd><dt>Validità</dt><dd>${info.mesi} mesi, poi si rinnova</dd><dt>Cosa serve</dt><dd>un documento e un selfie, con un fornitore specializzato</dd></dl>
-      <p class="small-note">Non conserviamo documenti né foto di identificazione: restano al fornitore. Noi sappiamo solo che sei verificato e fino a quando.</p>`,
-    ok: `Paga ${eur(info.prezzo_cents)} e verifica` });
+      <p class="small-note">Non conserviamo documenti né foto di identificazione: restano al fornitore. Noi sappiamo solo che sei certificato e fino a quando.</p>`,
+    ok: `Paga ${eur(info.prezzo_cents)} e certifica` });
   if (!go_) return false;
   const st = await call(sb.rpc('start_verification')); if (!st.ok) return false;
   if (!DEMO) { await modal({ title: 'Richiesta registrata', intro: 'Il collegamento con il fornitore di identità non è ancora attivo: vedi la guida (Edge Function e webhook).', hideOk: true, cancel: 'Chiudi' }); return false; }
@@ -593,14 +628,78 @@ async function verifyFlow(reason = '') {
     fields: [{ name: 'o', type: 'select', label: 'Esito della verifica', options: [['ok', 'Documento valido'], ['rifiutata', 'Documento non valido']] }] });
   if (!r) return false;
   await S.demo.completeVerification(st.data, r.o); await loadSession();
-  return !!(S.profile.verified_until && D(S.profile.verified_until) > new Date());
+  return myLevel() >= LEVEL.forte;
 }
-A.verify = async () => { if (await verifyFlow()) { toast('Identità verificata: hai il bollino.'); render(); } else render(); };
-const needsVerify = m => /identità verificata/i.test(m || '');
-async function withVerify(makeCall, reason) {
+async function phoneFlow() {
+  const r = await modal({ title: 'Verifica il telefono', intro: 'Ti mandiamo un SMS con un codice. Serve a dimostrare che il numero è tuo; ogni numero vale per un solo account.', ok: 'Invia il codice',
+    fields: [{ name: 'tel', label: 'Cellulare con prefisso (es. +39 347 1234567)', type: 'tel', required: true, max: 20 }] });
+  if (!r) return false;
+  const phone = r.tel.replace(/[^+0-9]/g, '');
+  if (!DEMO) { const u = await sb.auth.updateUser({ phone }); if (u.error) { toast('SMS non inviato: ' + HERR(u.error), true); return false; } }
+  for (let tentativo = 0; tentativo < 3; tentativo++) {
+    const c = await modal({ title: 'Inserisci il codice', ok: 'Conferma',
+      intro: (tentativo ? 'Codice errato: riprova. ' : '') + (DEMO ? 'Demo: nessun SMS vero. Il codice è 123456.' : `Abbiamo inviato un SMS al ${phone}.`),
+      fields: [{ name: 'c', label: 'Codice a 6 cifre', required: true, max: 6 }] });
+    if (!c) return false;
+    if (DEMO) { if (c.c.trim() === '123456') { await S.demo.confirmPhone(phone); return true; } continue; }
+    const v = await sb.auth.verifyOtp({ phone, token: c.c.trim(), type: 'phone_change' });
+    if (!v.error) return true;
+  }
+  toast('Troppi tentativi: richiedi un nuovo codice.', true); return false;
+}
+async function cfFlow() {
+  const parts = (S.profile.full_name || '').trim().split(/\s+/);
+  const r = await modal({ title: 'Controlla il codice fiscale', intro: 'Verifichiamo che sia coerente con nome, cognome e data di nascita. La data serve solo per il controllo e non viene salvata. Un codice fiscale può essere usato da un solo account.', ok: 'Controlla',
+    fields: [{ name: 'f', label: 'Nome', value: parts[0] || '', required: true, max: 60 }, { name: 'l', label: 'Cognome', value: parts.slice(1).join(' '), required: true, max: 60 },
+      { name: 'b', type: 'date', label: 'Data di nascita', required: true }, { name: 'c', label: 'Codice fiscale', required: true, max: 16 }] });
+  if (!r) return false;
+  const x = await sb.rpc('verify_tax_code', { p_first: r.f, p_last: r.l, p_birth: r.b, p_code: r.c });
+  if (x.error) { toast(HERR(x.error), true); return false; }
+  const d = x.data; if (d.ok) return true;
+  const row = (ok, t) => html`<p class="sm">${ok ? 'OK' : 'NON TORNA'}: ${t}</p>`;
+  await modal({ title: 'Il codice non torna', hideOk: true, cancel: 'Chiudi', intro: 'Controlla di aver scritto bene i dati e il codice.',
+    body: html`${row(d.formato, 'formato del codice')}${row(d.controllo, 'carattere di controllo')}${row(d.cognome, 'cognome')}${row(d.nome, 'nome')}${row(d.nascita, 'data di nascita')}` });
+  return false;
+}
+async function baseFlow(reason = '') {
+  let t = (await sb.rpc('my_trust')).data || {};
+  const go_ = await modal({ title: 'Verifica di base', intro: reason, ok: 'Cominciamo',
+    body: html`<p>È gratuita e ci vogliono pochi minuti: conferma del telefono con un SMS e controllo del codice fiscale. Serve anche l'email confermata.</p>` });
+  if (!go_) return false;
+  if (!t.email) { toast('Prima conferma l\'email: controlla la posta.', true); return false; }
+  if (!t.telefono && !(await phoneFlow())) return false;
+  if (!t.codice_fiscale && !(await cfFlow())) return false;
+  await loadSession(); return myLevel() >= LEVEL.base;
+}
+async function verifyFlow(reason = '', min = 'forte') {
+  if (myLevel() >= (LEVEL[min] ?? LEVEL.forte)) return true;
+  return min === 'base' ? baseFlow(reason) : strongFlow(reason);
+}
+A.verify = async () => { if (await strongFlow()) { toast('Identità certificata.'); } render(); };
+A.verifyPhone = async () => { if (await phoneFlow()) { await loadSession(); toast('Telefono confermato.'); } render(); };
+A.verifyCf = async () => { if (await cfFlow()) { await loadSession(); toast('Codice fiscale congruo.'); } render(); };
+A.uploadPhoto = async () => {
+  const r = await modal({ title: 'Foto del profilo', intro: 'Una foto recente, dove si vede bene il viso. La vedono solo gli organizzatori con cui hai un turno, che la confrontano con il selfie del check-in. Vale 12 mesi.', ok: 'Salva la foto',
+    fields: DEMO ? [] : [{ name: 'f', type: 'file', label: 'Foto', capture: true, required: true }], body: DEMO ? html`<p class="small-note">In demo non conserviamo foto: useremo un'immagine di esempio.</p>` : '' });
+  if (!r) return;
+  const path = `${S.uid}/${Date.now()}.jpg`;
+  if (!DEMO) { const up = await sb.storage.from('profili').upload(path, r.f, { upsert: true }); if (up.error) return toast('Foto non caricata: ' + up.error.message, true); }
+  if ((await call(sb.rpc('set_profile_photo', { p_path: path }), 'Foto salvata.')).ok) { await loadSession(); render(); }
+};
+A.identity = async el => {
+  const o = el.dataset.o; let note = '';
+  if (o === 'non_corrisponde') {
+    const r = await modal({ title: 'Non corrisponde?', danger: true, ok: 'Segnala', intro: 'Il check-in non viene confermato e la segnalazione va al nostro controllo. Usalo solo se la persona è chiaramente diversa da quella del profilo.', fields: [{ name: 'n', type: 'textarea', label: 'Cosa hai notato (facoltativo)', max: 300 }] });
+    if (!r) return; note = r.n;
+  }
+  const msg = { ok: 'Confermato: la persona corrisponde.', foto_datata: 'Confermato. Chiediamo alla persona di aggiornare la foto.', non_corrisponde: 'Segnalato: lo verifichiamo noi.' }[o];
+  if ((await call(sb.rpc('confirm_check_identity', { p_check: el.dataset.id, p_outcome: o, p_note: note }), msg)).ok) render();
+};
+const needsVerify = m => /verific/i.test(m || '');
+async function withVerify(makeCall, reason, min) {
   let x = await makeCall();
   if (x.error && needsVerify(x.error.message)) {
-    if (!(await verifyFlow(reason))) { toast('Senza verifica non puoi accettare questo ruolo.', true); return { ok: false, data: null }; }
+    if (!(await verifyFlow(reason, min || 'forte'))) { toast('Senza la verifica richiesta non puoi accettare questo ruolo.', true); return { ok: false, data: null }; }
     x = await makeCall();
   }
   if (x.error) { toast(HERR(x.error), true); return { ok: false, data: null }; }
@@ -619,7 +718,7 @@ A.respond = async el => {
   const yes = el.dataset.yes === '1';
   let x = await call(sb.rpc('respond_offer', { p_offer: el.dataset.id, p_accept: yes })); if (!x.ok) return;
   if (x.data === 'serve_verifica') {
-    if (!(await verifyFlow('Questo ruolo è riservato a persone con identità verificata.'))) return toast('La proposta resta in attesa: puoi accettarla dopo la verifica.');
+    if (!(await verifyFlow('Questo ruolo richiede una verifica prima di accettare.', el.dataset.min))) return toast('La proposta resta in attesa: puoi accettarla dopo la verifica.');
     x = await call(sb.rpc('respond_offer', { p_offer: el.dataset.id, p_accept: yes })); if (!x.ok) return;
   }
   const msg = { accettata: 'Fatto: è nel tuo calendario.', rifiutata: 'Proposta rifiutata.', scaduta: 'La proposta era scaduta.', posti_esauriti: 'Troppo tardi: i posti sono già coperti.', non_piu_necessaria: 'La riserva non serve più.', non_disponibile: 'Hai già un impegno in quella fascia.' }[x.data] || x.data;
@@ -631,18 +730,18 @@ A.block = async el => {
 };
 A.unblock = async el => { if ((await call(sb.rpc('unblock_organizer', { p_employer: el.dataset.emp }), 'Sbloccato.')).ok) render(); };
 A.withdrawApp = async el => { if ((await call(sb.from('applications').delete().eq('id', el.dataset.id), 'Candidatura ritirata.')).ok) render(); };
-A.claim = async el => { const x = await withVerify(() => sb.rpc('claim_standby', { p_guarantee: el.dataset.id }), 'Questo ruolo è riservato a persone con identità verificata.'); if (x.ok) { toast('Sei riserva per questo evento.'); render(); } };
+A.claim = async el => { const x = await withVerify(() => sb.rpc('claim_standby', { p_guarantee: el.dataset.id }), 'Questo ruolo richiede una verifica prima di accettare.', el.dataset.min); if (x.ok) { toast('Sei riserva per questo evento.'); render(); } };
 A.job = el => go('job', el.dataset.id);
 A.applyJob = async el => {
   const r = await modal({ title: 'Candidati', fields: [{ name: 'm', type: 'textarea', label: 'Messaggio per l\'organizzatore (facoltativo)', max: 500 }], ok: 'Invia candidatura' }); if (!r) return;
-  const x = await withVerify(() => sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: null }), 'Questo ruolo è riservato a persone con identità verificata.');
+  const x = await withVerify(() => sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: null }), 'Questo ruolo richiede una verifica prima di candidarti.', el.dataset.min);
   if (x.ok) { toast('Candidatura inviata.'); render(); }
 };
 A.applyLink = async el => {
   if (!S.uid) { toast('Accedi o registrati per candidarti.'); return go('register'); }
   if (!isSeeker()) return toast('Solo chi cerca lavoro può candidarsi.', true);
   const r = await modal({ title: 'Candidati', fields: [{ name: 'm', type: 'textarea', label: 'Messaggio per l\'organizzatore (facoltativo)', max: 500 }], ok: 'Invia candidatura' }); if (!r) return;
-  const x = await withVerify(() => sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: S.linkCode }), 'Questo ruolo è riservato a persone con identità verificata.');
+  const x = await withVerify(() => sb.rpc('apply_to_job', { p_job: el.dataset.job, p_message: r.m, p_link_code: S.linkCode }), 'Questo ruolo richiede una verifica prima di candidarti.', el.dataset.min);
   if (x.ok) { toast('Candidatura inviata.'); go('offers'); }
 };
 A.checkin = async el => {
@@ -716,11 +815,11 @@ A.newRole = async el => {
     { name: 'd', type: 'textarea', label: 'Descrizione', required: true, max: 2000 },
     { name: 'h', type: 'number', label: 'Persone richieste', value: 2, min: 1, max: 100, required: true }, { name: 'p', type: 'number', label: 'Paga a persona per il turno (€)', value: 80, min: 1, step: '0.5', required: true },
     { name: 'a', type: 'datetime-local', label: 'Inizio', value: toLocalInput(s), required: true }, { name: 'b', type: 'datetime-local', label: 'Fine', value: toLocalInput(e), required: true },
-    { name: 'ver', type: 'checkbox', label: 'Solo persone con identità verificata (la verifica è a carico del lavoratore e vale 12 mesi)' },
+    { name: 'minv', type: 'select', label: 'Verifica richiesta a chi accetta', value: 'nessuna', options: [['nessuna', 'Nessuna: aperto a tutti, conta la classifica'], ['base', 'Verifica di base (gratuita: telefono, email, codice fiscale)'], ['forte', 'Identità certificata con documento (a carico del lavoratore)']] },
     { name: 'auto', type: 'checkbox', label: 'Scelta automatica: il sistema propone il ruolo ai migliori candidati' }] }); if (!r) return;
   if (D(r.b) <= D(r.a)) return toast('La fine deve essere dopo l\'inizio.', true);
   const x = await call(sb.from('jobs').insert({ employer_id: S.uid, company_name: S.profile.full_name, title: r.t, description: r.d, city: ev.city, event_id: ev.id, role_code: r.role,
-    headcount: Number(r.h), shift_pay_cents: Math.round(Number(r.p) * 100), starts_at: D(r.a).toISOString(), ends_at: D(r.b).toISOString(), require_verified: !!r.ver }).select('id'), 'Ruolo pubblicato.');
+    headcount: Number(r.h), shift_pay_cents: Math.round(Number(r.p) * 100), starts_at: D(r.a).toISOString(), ends_at: D(r.b).toISOString(), min_verification: r.minv }).select('id'), 'Ruolo pubblicato.');
   if (!x.ok) return;
   if (r.auto) await call(sb.rpc('enable_auto_select', { p_job: x.data[0].id }), 'Scelta automatica attiva: inviti partiti.');
   S.open[x.data[0].id] = 'cand'; render();
@@ -775,7 +874,7 @@ A.notif = async el => {
   const { data: n } = await sb.from('notifications').select('*').eq('id', el.dataset.id).maybeSingle(); if (!n) return;
   if (!n.read_at) await sb.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', n.id);
   const k = n.kind;
-  if (/^verifica_/.test(k)) return go('profile');
+  if (/^(verifica_|foto_da_aggiornare)/.test(k)) return go('profile');
   if (/^proposta_(turno|riserva|in_scadenza|scaduta|ritirata)$/.test(k)) return go('offers');
   if (/^(turno_assegnato|sostituzione_attivata|turno_annullato|riserva_annullata)$/.test(k)) return go('calendar');
   let evId = n.payload && n.payload.event_id;

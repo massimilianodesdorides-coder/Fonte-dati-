@@ -33,7 +33,7 @@
 --   esperienza nello stesso ruolo (max 10 turni) 25
 --   affidabilità (completati / no-show / ritardi) 30  (chi è nuovo parte da 24)
 --   si è candidato all'annuncio (solo turni) .. 10
---   identità verificata (certificazione valida) 10
+--   fiducia: verifiche e conferma sul campo ... 0-10 (vedi Fase 2h)
 -- =====================================================================
 
 -- 1) CAMPI NUOVI ---------------------------------------------------------
@@ -79,6 +79,7 @@ create table public.notifications (
   body       text not null default '',
   job_id     uuid references public.jobs(id) on delete cascade,
   payload    jsonb not null default '{}',
+  about_user uuid references public.profiles(id) on delete cascade,   -- persona citata nel testo: si cancella con lei
   read_at    timestamptz,
   created_at timestamptz not null default now()
 );
@@ -150,11 +151,12 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 create function public._notify(p_user uuid, p_kind text, p_title text, p_body text,
-                               p_job uuid default null, p_payload jsonb default '{}')
+                               p_job uuid default null, p_payload jsonb default '{}',
+                               p_about uuid default null)
 returns void
 language sql security definer set search_path = public as $$
-  insert into public.notifications (user_id, kind, title, body, job_id, payload)
-  values (p_user, p_kind, p_title, p_body, p_job, coalesce(p_payload, '{}'))
+  insert into public.notifications (user_id, kind, title, body, job_id, payload, about_user)
+  values (p_user, p_kind, p_title, p_body, p_job, coalesce(p_payload, '{}'), p_about)
 $$;
 
 create function public.set_worker_note(p_worker uuid, p_kind text, p_reason text default null,
@@ -211,7 +213,7 @@ create function public.rank_candidates(p_job uuid, p_reserve boolean default fal
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
                applied boolean, offer_status text, score int, breakdown jsonb,
-               annotation text, annotation_note text, verified boolean)
+               annotation text, annotation_note text, trust jsonb)
 language sql stable security definer set search_path = public as $$
   with j as (
     select jb.id, jb.employer_id, jb.role_code, jb.starts_at, jb.ends_at, e.city as ev_city
@@ -257,7 +259,7 @@ language sql stable security definer set search_path = public as $$
       round(25 * least(s.done_role, 10) / 10.0)::int as p_exp,
       round(30 * (s.done + 4.0) / (s.done + 5.0 + 3 * s.ns + 0.5 * s.lt))::int as p_rel,
       case when s.applied then 10 else 0 end as p_int,
-      case when public.is_verified(s.id) then 10 else 0 end as p_ver
+      public.trust_points(s.id) as p_ver
     from stats s cross join j
   )
   select sc.id, public._display_name(sc.id), sc.city, sc.bio,
@@ -267,8 +269,8 @@ language sql stable security definer set search_path = public as $$
          (select o.status from public.offers o where o.job_id = p_job and o.worker_id = sc.id),
          sc.p_city + sc.p_exp + sc.p_rel + sc.p_int + sc.p_ver,
          jsonb_build_object('citta', sc.p_city, 'esperienza', sc.p_exp,
-                            'affidabilita', sc.p_rel, 'interesse', sc.p_int, 'verificato', sc.p_ver),
-         n.kind, n.note, public.is_verified(sc.id)
+                            'affidabilita', sc.p_rel, 'interesse', sc.p_int, 'fiducia', sc.p_ver),
+         n.kind, n.note, public.trust_info(sc.id)
   from scored sc
   left join public.worker_notes n
          on n.worker_id = sc.id
@@ -305,9 +307,11 @@ begin
   else
     v_body := v_body || ' Paga: ' || (v_j.shift_pay_cents / 100.0)::numeric(10,2) || ' €.';
   end if;
-  if public.job_requires_verification(p_job) then
-    v_body := v_body || ' Richiede identità verificata.';
-    v_payload := v_payload || jsonb_build_object('richiede_verifica', true);
+  if public.job_min_verification(p_job) <> 'nessuna' then
+    v_body := v_body || case public.job_min_verification(p_job)
+                when 'forte' then ' Richiede identità certificata con documento.'
+                else ' Richiede la verifica di base (telefono, email, codice fiscale).' end;
+    v_payload := v_payload || jsonb_build_object('verifica', public.job_min_verification(p_job));
   end if;
   v_org := public.organizer_summary(v_j.employer_id);
   if v_org ? 'nuovo' then
@@ -328,7 +332,7 @@ create function public.match_workers(p_job uuid, p_limit int default 50)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
                applied boolean, offer_status text, score int, breakdown jsonb,
-               annotation text, annotation_note text, verified boolean)
+               annotation text, annotation_note text, trust jsonb)
 language sql stable security definer set search_path = public as $$
   select * from public.rank_candidates(p_job, false)
   where public.is_job_employer(p_job)
@@ -340,7 +344,7 @@ create function public.match_reserves(p_job uuid, p_limit int default 50)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
                applied boolean, offer_status text, score int, breakdown jsonb,
-               annotation text, annotation_note text, verified boolean)
+               annotation text, annotation_note text, trust jsonb)
 language sql stable security definer set search_path = public as $$
   select * from public.rank_candidates(p_job, true)
   where public.is_job_employer(p_job)
@@ -366,7 +370,7 @@ begin
   if v_c.offer_status is not null then raise exception 'già invitato (stato: %)', v_c.offer_status; end if;
   select * into v_s from public.platform_settings;
   select count(*) into v_act from public.shifts
-   where job_id = p_job and not is_replacement and status in ('assegnato','confermato','completato');
+   where job_id = p_job and status in ('assegnato','confermato','completato');
   select count(*) into v_pend from public.offers where job_id = p_job and status = 'inviata' and kind = 'turno';
   if v_act + v_pend >= v_j.headcount * v_s.offer_overbook then
     raise exception 'troppi inviti in attesa per i posti disponibili';
@@ -413,8 +417,12 @@ end $$;
 -- accettata | rifiutata | scaduta | posti_esauriti | non_piu_necessaria | non_disponibile
 create function public.respond_offer(p_offer uuid, p_accept boolean) returns text
 language plpgsql security definer set search_path = public as $$
-declare v_o public.offers; v_j public.jobs; v_g public.guarantees; v_n int; v_name text;
+declare v_o public.offers; v_j public.jobs; v_g public.guarantees; v_n int; v_name text; v_pre uuid;
 begin
+  -- ordine dei blocchi (evita gli stalli): prima l'annuncio, poi la proposta
+  select job_id into v_pre from public.offers where id = p_offer and worker_id = auth.uid();
+  if not found then raise exception 'invito non trovato'; end if;
+  perform 1 from public.jobs where id = v_pre for update;
   select * into v_o from public.offers where id = p_offer and worker_id = auth.uid() for update;
   if not found then raise exception 'invito non trovato'; end if;
   if v_o.status <> 'inviata' then raise exception 'invito non più valido (stato: %)', v_o.status; end if;
@@ -424,7 +432,7 @@ begin
   if not p_accept then
     update public.offers set status = 'rifiutata', responded_at = now() where id = v_o.id;
     perform public._notify(v_j.employer_id, 'proposta_rifiutata', 'Proposta rifiutata',
-      v_name || ' ha rifiutato: ' || v_j.title, v_j.id, jsonb_build_object('offer_id', v_o.id, 'tipo', v_o.kind));
+      v_name || ' ha rifiutato: ' || v_j.title, v_j.id, jsonb_build_object('offer_id', v_o.id, 'tipo', v_o.kind), auth.uid());
     perform public.check_coverage(v_o.job_id);
     return 'rifiutata';
   end if;
@@ -439,12 +447,13 @@ begin
   if v_o.kind = 'turno' then
     select * into v_j from public.jobs where id = v_o.job_id for update;
     select count(*) into v_n from public.shifts
-     where job_id = v_j.id and not is_replacement and status in ('assegnato','confermato','completato');
+     where job_id = v_j.id and status in ('assegnato','confermato','completato');
     if v_n >= v_j.headcount then
       update public.offers set status = 'scaduta', responded_at = now() where id = v_o.id;
       return 'posti_esauriti';
     end if;
-    if not public.worker_is_free(auth.uid(), v_j.starts_at, v_j.ends_at) then
+    if not public.worker_is_free(auth.uid(), v_j.starts_at, v_j.ends_at)
+       or exists (select 1 from public.shifts where job_id = v_j.id and worker_id = auth.uid()) then
       update public.offers set status = 'scaduta', responded_at = now() where id = v_o.id;
       return 'non_disponibile';
     end if;
@@ -477,7 +486,7 @@ begin
 
   perform public._notify(v_j.employer_id, 'proposta_accettata', 'Proposta accettata',
     v_name || ' ha accettato' || case v_o.kind when 'riserva' then ' come riserva: ' else ': ' end || v_j.title,
-    v_j.id, jsonb_build_object('offer_id', v_o.id, 'tipo', v_o.kind));
+    v_j.id, jsonb_build_object('offer_id', v_o.id, 'tipo', v_o.kind), auth.uid());
   return 'accettata';
 end $$;
 
@@ -514,7 +523,7 @@ begin
   end if;
   -- turni
   select count(*) into v_act from public.shifts
-   where job_id = p_job and not is_replacement and status in ('assegnato','confermato','completato');
+   where job_id = p_job and status in ('assegnato','confermato','completato');
   select count(*) into v_pend from public.offers where job_id = p_job and status = 'inviata' and kind = 'turno';
   v_missing := v_j.headcount - v_act - v_pend;
   if v_missing > 0 then
@@ -557,7 +566,7 @@ begin
   if v_j.auto_select then perform public.fill_job(p_job); end if;
 
   select count(*) into v_act from public.shifts
-   where job_id = p_job and not is_replacement and status in ('assegnato','confermato','completato');
+   where job_id = p_job and status in ('assegnato','confermato','completato');
   select count(*) into v_pend from public.offers where job_id = p_job and status = 'inviata' and kind = 'turno';
   v_ms := greatest(v_j.headcount - v_act - v_pend, 0);
   select count(*) into v_mr from public.guarantees g
@@ -640,13 +649,14 @@ begin
 end $$;
 
 -- Slot di riserva consultabili dal lavoratore (bacheca): esclusi quelli con una proposta in attesa
-create or replace function public.open_standby_slots()
+drop function if exists public.open_standby_slots();
+create function public.open_standby_slots()
 returns table (guarantee_id uuid, job_id uuid, event_name text, city text, role_code text,
                starts_at timestamptz, ends_at timestamptz,
-               fee_if_unused_cents int, pay_if_activated_cents int)
+               fee_if_unused_cents int, pay_if_activated_cents int, verifica text)
 language sql stable security definer set search_path = public as $$
   select g.id, j.id, e.name, e.city, j.role_code, j.starts_at, j.ends_at,
-         g.standby_fee_cents, j.shift_pay_cents
+         g.standby_fee_cents, j.shift_pay_cents, public.job_min_verification(j.id)
   from public.guarantees g
   join public.jobs j   on j.id = g.job_id
   join public.events e on e.id = j.event_id
@@ -671,7 +681,7 @@ $$;
 
 -- 6) PERMESSI ---------------------------------------------------------------
 
-revoke all on function public._display_name(uuid), public._notify(uuid, text, text, text, uuid, jsonb),
+revoke all on function public._display_name(uuid), public._notify(uuid, text, text, text, uuid, jsonb, uuid),
   public.rank_candidates(uuid, boolean), public._send_offer(uuid, uuid, text, int, text, uuid),
   public.match_workers(uuid, int), public.match_reserves(uuid, int),
   public.invite_worker(uuid, uuid), public.invite_reserve(uuid, uuid), public.withdraw_offer(uuid),

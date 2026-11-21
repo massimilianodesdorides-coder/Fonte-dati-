@@ -8,14 +8,15 @@
 --
 -- Si esegue DOPO tutti gli schemi (anche 2g):
 --   select public.test_generate_workers(30);                -- 30 lavoratori a Milano
---   select public.test_generate_workers(20, 'Roma', 50);    -- 20 a Roma, metà verificati
+--   select public.test_generate_workers(20, 'Roma', 50, 30); -- 20 a Roma: 50% con documento, 30% verifica di base
 --   select public.test_purge();                              -- toglie tutti gli utenti di prova
 -- Le email di prova finiscono tutte con @test.invalid.
 -- =====================================================================
 
 create or replace function public.test_generate_workers(p_count int default 20,
                                                         p_city text default 'Milano',
-                                                        p_verified_pct int default 30)
+                                                        p_verified_pct int default 30,
+                                                        p_base_pct int default 30)
 returns int
 language plpgsql security definer set search_path = public as $$
 declare
@@ -24,7 +25,7 @@ declare
   all_roles text[] := array['barman','hostess_steward','servizio_tavoli'];
   bios text[] := array['Esperienza in locali e catering.','Disponibile nei weekend e la sera.','Lavoro volentieri a eventi aziendali e fiere.','Preciso e puntuale, anche inglese.','Prima esperienza ma tanta voglia di fare.','Ho lavorato a matrimoni e feste private.'];
   v_hist uuid; v_ev uuid; v_id uuid; v_name text; v_nroles int; v_k int; v_role text; v_my text[];
-  v_made int := 0; i int; r text; v_ids uuid[] := '{}'; v_verified boolean;
+  v_made int := 0; i int; r text; v_ids uuid[] := '{}'; v_verified boolean; v_base boolean;
 begin
   -- organizzatore "storico" con molti turni passati, creato una sola volta
   select id into v_hist from auth.users where email = 'storico@test.invalid';
@@ -49,12 +50,19 @@ begin
     returning id into v_id;
     v_ids := v_ids || v_id;
     v_verified := random() * 100 < p_verified_pct;
+    v_base := not v_verified and random() * 100 < p_base_pct;
     update public.profiles
        set city = p_city, phone = '3' || (300000000 + floor(random() * 99999999)::int)::text,
            bio = bios[1 + floor(random() * array_length(bios, 1))::int], discoverable = true,
            verified_until = case when v_verified then now() + interval '12 months' end,
            verification_level = case when v_verified then 'forte' end
      where id = v_id;
+
+    if v_verified or v_base then      -- contatti confermati e codice fiscale (finto) per il livello base
+      update auth.users set email_confirmed_at = now(), phone = '+39' || (3000000000 + floor(random() * 999999999)::bigint)::text,
+                            phone_confirmed_at = now() where id = v_id;
+      insert into public.worker_identity (worker_id, tax_code) values (v_id, 'TEST' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)));
+    end if;
 
     -- 1 o 2 ruoli
     v_nroles := 1 + (random() < 0.4)::int;
@@ -76,7 +84,7 @@ begin
 
     if to_regclass('public.demo_users') is not null then
       execute 'insert into public.demo_users (id, label, descr, ord) values ($1, $2, $3, $4)'
-        using v_id, v_name, array_to_string(v_my, ', ') || case when v_verified then ' · verificato' else '' end, 100 + i;
+        using v_id, v_name, array_to_string(v_my, ', ') || case when v_verified then ' · con documento' when v_base then ' · verifica di base' else '' end, 100 + i;
     end if;
     v_made := v_made + 1;
   end loop;
@@ -97,4 +105,4 @@ begin
   return n;
 end $$;
 
-revoke all on function public.test_generate_workers(int, text, int), public.test_purge() from public, anon, authenticated;
+revoke all on function public.test_generate_workers(int, text, int, int), public.test_purge() from public, anon, authenticated;

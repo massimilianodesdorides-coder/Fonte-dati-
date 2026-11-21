@@ -1,0 +1,9 @@
+{
+  "name": "lavoro-facile-tools",
+  "private": true,
+  "description": "Dipendenze per generare demo.html (PostgreSQL nel browser)",
+  "devDependencies": {
+    "@electric-sql/pglite": "0.2.17",
+    "esbuild": "0.28.2"
+  }
+}

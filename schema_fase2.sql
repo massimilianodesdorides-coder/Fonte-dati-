@@ -235,6 +235,18 @@ create function public.is_verified(p_worker uuid) returns boolean
 language sql stable security definer set search_path = public as $$ select false $$;
 create function public.job_requires_verification(p_job uuid) returns boolean
 language sql stable security definer set search_path = public as $$ select false $$;
+create function public.job_min_verification(p_job uuid) returns text
+language sql stable security definer set search_path = public as $$ select 'nessuna'::text $$;
+create function public.verification_level(p_worker uuid) returns text
+language sql stable security definer set search_path = public as $$ select 'nessuna'::text $$;
+create function public.trust_points(p_worker uuid) returns int
+language sql stable security definer set search_path = public as $$ select 0 $$;
+create function public.trust_info(p_worker uuid) returns jsonb
+language sql stable security definer set search_path = public as $$ select '{}'::jsonb $$;
+create function public.identity_outcome_of(p_shift uuid) returns text
+language sql stable security definer set search_path = public as $$ select null::text $$;
+create function public.profile_photo_of(p_worker uuid) returns text
+language sql stable security definer set search_path = public as $$ select null::text $$;
 create function public.job_allows_worker(p_job uuid, p_worker uuid) returns boolean
 language sql stable security definer set search_path = public as $$ select true $$;
 
@@ -362,8 +374,11 @@ begin
   select * into v_j from public.jobs where id = v_a.job_id for update;
   if v_j.employer_id is distinct from auth.uid() then raise exception 'non autorizzato'; end if;
   if v_j.event_id is null then raise exception 'solo gli annunci collegati a un evento generano turni'; end if;
+  if exists (select 1 from public.shifts where job_id = v_j.id and worker_id = v_a.seeker_id) then
+    raise exception 'questa persona è già stata assegnata a questo annuncio';
+  end if;
   select count(*) into v_n from public.shifts
-   where job_id = v_j.id and not is_replacement and status in ('assegnato','confermato','completato');
+   where job_id = v_j.id and status in ('assegnato','confermato','completato');
   if v_n >= v_j.headcount then raise exception 'posti esauriti'; end if;
   if not public.worker_is_free(v_a.seeker_id, v_j.starts_at, v_j.ends_at) then
     raise exception 'il candidato ha già un impegno in quella fascia';
@@ -399,6 +414,9 @@ begin
                     where shift_id = v_sh.id and kind = 'in' and confirmed_at is not null) then
     raise exception 'check-out possibile solo dopo il check-in confermato';
   end if;
+  if exists (select 1 from public.check_events where shift_id = v_sh.id and kind = p_kind) then
+    raise exception 'hai già inviato il %: attendi la conferma dell''organizzatore', case p_kind when 'in' then 'check-in' else 'check-out' end;
+  end if;
   insert into public.check_events (shift_id, kind, lat, lng, selfie_path)
   values (v_sh.id, p_kind, p_lat, p_lng, p_selfie) returning id into v_id;
   return v_id;
@@ -408,8 +426,11 @@ end $$;
 create function public.employer_confirm_check(p_check uuid) returns void
 language plpgsql security definer set search_path = public as $$
 declare v_ce public.check_events; v_sh public.shifts; v_j public.jobs;
-        v_s public.platform_settings; v_expected timestamptz;
+        v_s public.platform_settings; v_expected timestamptz; v_pre uuid;
 begin
+  -- ordine dei blocchi (evita gli stalli): prima l'annuncio
+  select s.job_id into v_pre from public.check_events c join public.shifts s on s.id = c.shift_id where c.id = p_check;
+  if found then perform 1 from public.jobs where id = v_pre for update; end if;
   select * into v_ce from public.check_events where id = p_check for update;
   if not found then raise exception 'check non trovato'; end if;
   select * into v_sh from public.shifts where id = v_ce.shift_id for update;
@@ -441,8 +462,11 @@ end $$;
 create function public.report_no_show(p_shift uuid) returns text
 language plpgsql security definer set search_path = public as $$
 declare v_sh public.shifts; v_j public.jobs; v_s public.platform_settings;
-        v_sa public.standby_assignments; v_g public.guarantees; v_new uuid;
+        v_sa public.standby_assignments; v_g public.guarantees; v_new uuid; v_pre uuid;
 begin
+  -- ordine dei blocchi (evita gli stalli): prima l'annuncio, poi il turno
+  select job_id into v_pre from public.shifts where id = p_shift;
+  if found then perform 1 from public.jobs where id = v_pre for update; end if;
   select * into v_sh from public.shifts where id = p_shift for update;
   if not found then raise exception 'turno non trovato'; end if;
   select * into v_j from public.jobs where id = v_sh.job_id;
@@ -539,7 +563,9 @@ revoke all on function public.my_role(), public.is_job_employer(uuid), public.in
   public.claim_standby(uuid), public.withdraw_standby(uuid), public.accept_application(uuid),
   public.worker_check(uuid, text, double precision, double precision, text),
   public.employer_confirm_check(uuid), public.report_no_show(uuid), public.close_guarantees(),
-  public.is_verified(uuid), public.job_requires_verification(uuid), public.job_allows_worker(uuid, uuid)
+  public.is_verified(uuid), public.job_requires_verification(uuid), public.job_allows_worker(uuid, uuid),
+  public.job_min_verification(uuid), public.verification_level(uuid), public.trust_points(uuid),
+  public.trust_info(uuid), public.identity_outcome_of(uuid), public.profile_photo_of(uuid)
   from public, anon, authenticated;
 
 grant execute on function public.my_role(), public.is_job_employer(uuid), public.involved_in_job(uuid),

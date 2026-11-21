@@ -5,7 +5,7 @@
 --
 -- COME FUNZIONA
 --  * L'organizzatore può chiedere, ruolo per ruolo, "solo persone con identità
---    verificata" (jobs.require_verified). A lui non costa nulla.
+--    verificata" (jobs.min_verification: 'base' o 'forte'). A lui non costa nulla.
 --  * Un lavoratore non verificato che riceve una proposta su quel ruolo (o si
 --    candida) deve prima verificarsi: parte il servizio di identificazione, che
 --    paga lui una volta sola. Se non vuole, la proposta resta senza effetto.
@@ -32,7 +32,9 @@ alter table public.profiles
   add column verification_level  text check (verification_level in ('forte'));
 -- verified_until e verification_level non sono scrivibili dai client (permessi a colonna in schema.sql)
 
-alter table public.jobs add column require_verified boolean not null default false;
+-- requisito minimo del ruolo: nessuna (predefinito), base (telefono+email+codice fiscale) o forte (documento)
+alter table public.jobs add column min_verification text not null default 'nessuna'
+  check (min_verification in ('nessuna','base','forte'));
 
 create table public.verification_requests (
   id           uuid primary key default gen_random_uuid(),
@@ -61,12 +63,26 @@ $$;
 
 create or replace function public.job_requires_verification(p_job uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select coalesce((select require_verified from public.jobs where id = p_job), false)
+  select coalesce((select min_verification <> 'nessuna' from public.jobs where id = p_job), false)
+$$;
+
+create or replace function public.job_min_verification(p_job uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select coalesce((select min_verification from public.jobs where id = p_job), 'nessuna')
+$$;
+
+-- livello del lavoratore: qui solo 'forte' o 'nessuna'; la Fase 2h aggiunge 'base'
+create or replace function public.verification_level(p_worker uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select case when public.is_verified(p_worker) then 'forte' else 'nessuna' end
 $$;
 
 create or replace function public.job_allows_worker(p_job uuid, p_worker uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select not public.job_requires_verification(p_job) or public.is_verified(p_worker)
+  select case public.job_min_verification(p_job)
+           when 'nessuna' then true
+           when 'base' then public.verification_level(p_worker) in ('base','forte')
+           else public.verification_level(p_worker) = 'forte' end
 $$;
 
 -- Stato della certificazione del lavoratore collegato
@@ -130,6 +146,7 @@ begin
 end $$;
 
 revoke all on function public.is_verified(uuid), public.job_requires_verification(uuid),
+  public.job_min_verification(uuid), public.verification_level(uuid),
   public.job_allows_worker(uuid, uuid), public.complete_verification(uuid, text, text)
   from public, anon, authenticated;
 revoke all on function public.my_verification(), public.start_verification() from public, anon;

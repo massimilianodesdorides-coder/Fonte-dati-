@@ -39,7 +39,8 @@ if not os.path.exists(iife):
 STUB = """
 create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
 create schema auth;
-create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}');
+create table auth.users (id uuid primary key default gen_random_uuid(), email text, raw_user_meta_data jsonb default '{}',
+  email_confirmed_at timestamptz default now(), phone text, phone_confirmed_at timestamptz);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true),'')::uuid $$;
 grant usage on schema public, auth to anon, authenticated;
 alter default privileges in schema public grant all on tables to anon, authenticated;
@@ -47,7 +48,7 @@ alter default privileges in schema public grant all on functions to anon, authen
 """
 files = ['schema.sql', 'schema_fase2.sql', 'schema_fase2b_matching.sql', 'schema_fase2c_calendario.sql',
          'schema_fase2d_evento_completo.sql', 'schema_fase2e_canali_scheda.sql', 'schema_fase2f_rating_organizzatori.sql',
-         'schema_fase2g_verifica_identita.sql', 'tools/test_utenti.sql']
+         'schema_fase2g_verifica_identita.sql', 'schema_fase2h_fiducia.sql', 'schema_fase2i_permessi.sql', 'tools/test_utenti.sql']
 sqls = [{'name': 'stub', 'sql': STUB}] + [{'name': f, 'sql': rd(f)} for f in files] + [{'name': 'seed', 'sql': seed}]
 sqljson = json.dumps(sqls).replace('<', '\\u003c')
 

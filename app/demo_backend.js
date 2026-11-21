@@ -179,6 +179,7 @@ async function makeDemoBackend() {
     },
     async expireOffers() { await pg.exec(`update offers set expires_at = now() - interval '1 minute' where status = 'inviata'`); },
     async completeVerification(requestId, outcome) { await pg.query(`select complete_verification($1, $2, 'demo')`, [requestId, outcome]); },
+    async confirmPhone(phone) { await pg.query(`update auth.users set phone = $1, phone_confirmed_at = now() where id = $2`, [phone + '-' + uid.slice(-4), uid]); },
     async generateWorkers(n) { const r = await pg.query(`select test_generate_workers($1, 'Milano', 30) as n`, [n]); return r.rows[0].n; },
     async purgeTest() { const r = await pg.query(`select test_purge() as n`); return r.rows[0].n; },
     async cron() {

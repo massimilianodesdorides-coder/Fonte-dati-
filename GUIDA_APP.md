@@ -8,7 +8,7 @@
 | `tools/build.py` | unisce tutto in pagine singole |
 | `app.html` | l'app **online**: parla con Supabase |
 | `demo.html` | la **demo** da aprire dal computer (doppio clic): contiene un vero PostgreSQL |
-| `schema*.sql` | il database, da caricare in quest'ordine: `schema.sql`, `schema_fase2.sql`, `2b`, `2c`, `2d`, `2e`, `2f`, `2g` |
+| `schema*.sql` | il database, da caricare in quest'ordine: `schema.sql`, `schema_fase2.sql`, `2b`, `2c`, `2d`, `2e`, `2f`, `2g`, `2h`, `2i` (l'ultima sempre per ultima: chiude i permessi) |
 | `tools/test_utenti.sql` | solo per i test: crea lavoratori finti (vedi sotto) |
 
 `demo.html` non è nel repository (pesa 6 MB): si genera con `python3 tools/build.py`
@@ -36,7 +36,7 @@ In demo i dati restano solo nel tuo browser e il selfie non viene conservato.
    SQL **in ordine**: `schema.sql`, `schema_fase2.sql`, `schema_fase2b_matching.sql`,
    `schema_fase2c_calendario.sql`, `schema_fase2d_evento_completo.sql`,
    `schema_fase2e_canali_scheda.sql`, `schema_fase2f_rating_organizzatori.sql`,
-   `schema_fase2g_verifica_identita.sql`.
+   `schema_fase2g_verifica_identita.sql`, `schema_fase2h_fiducia.sql`, `schema_fase2i_permessi.sql` (per ultima).
 2. **Controlli automatici** (scadenze inviti, promemoria, chiusura garanzie):
    attiva l'estensione *pg_cron* (Database → Extensions) ed esegui
    ```sql
@@ -69,19 +69,44 @@ In demo i dati restano solo nel tuo browser e il selfie non viene conservato.
   Authentication, Providers, Email.
 - **Non eseguire mai `test_utenti.sql` in produzione.**
 
-## Identità verificata (facoltativa, a carico di chi la vuole)
+## Fiducia a livelli (nessuna barriera all'ingresso)
 
-- L'organizzatore può chiedere "solo persone con identità verificata" ruolo per ruolo, senza costi per lui.
-- Un lavoratore non verificato che riceve una proposta su quel ruolo, o si candida, deve prima
-  verificarsi (costo una tantum a suo carico, validità 12 mesi). Altrimenti la proposta non ha effetto.
-- Il bollino vale 10 punti in classifica. Salviamo solo "verificato fino al…": documenti e selfie
-  restano al fornitore.
-- Prezzo e durata si cambiano in `platform_settings` (`verification_price_cents`, `verification_months`).
-  Il prezzo vero dipende dal fornitore scelto: 15 € è un segnaposto.
-- **Da collegare online**: una Edge Function che, dopo `start_verification()`, apre pagamento e verifica
-  del fornitore (per esempio Stripe Identity) e, sul suo webhook, chiama con la chiave di servizio
-  `complete_verification(richiesta, 'ok' o 'rifiutata', riferimento)`. Non è inclusa: in demo
-  l'esito del fornitore è simulato.
+Registrarsi è libero. La serietà emerge dal punteggio, che sale con le verifiche e con la storia:
+
+| Livello | Come si ottiene | Costo |
+|---|---|---|
+| nessuna | solo registrazione | gratis |
+| **base** | email confermata + telefono confermato con SMS + codice fiscale congruo con nome e data di nascita | gratis (costo degli SMS) |
+| **forte** | documento e selfie con un fornitore specializzato, valida 12 mesi | a carico del lavoratore, facoltativa |
+
+Segnali in più, che non sono livelli:
+
+- **Conferma sul campo**: al check-in l'organizzatore vede la foto del profilo accanto al selfie e sceglie
+  "È la persona", "È lei/lui ma la foto è datata" oppure "Non corrisponde". Vale se la foto non è
+  segnalata e ha meno di 12 mesi. "Non corrisponde" non conferma il check-in e apre una segnalazione.
+- **Foto del profilo**: la vede solo un organizzatore con cui il lavoratore ha un turno, mai nelle liste di candidati.
+
+Punteggio di fiducia (0-10, nella classifica): documento 10; altrimenti contatti 2 + codice fiscale 3 + conferma sul campo 5.
+
+L'organizzatore **può** chiedere un livello minimo per un ruolo ("base" o "forte"); di default non chiede nulla.
+Chi non lo ha può accettare solo dopo la verifica guidata; se non la fa, la proposta resta senza effetto.
+
+Cosa non provano (detto chiaramente nell'app): il codice fiscale si può calcolare da dati pubblici, e la conferma
+dell'organizzatore dice che la persona corrisponde alla foto, non che il nome sia quello legale. Per l'identità
+di legge serve il documento. Un codice fiscale vale per un solo account.
+
+**Da collegare online**: l'SMS richiede un fornitore configurato in Supabase (Authentication, Phone). Per il
+documento serve una piccola funzione sul server che, dopo `start_verification()`, apre pagamento e verifica del
+fornitore (per esempio Stripe Identity) e, sul suo webhook, chiama con la chiave di servizio
+`complete_verification(richiesta, 'ok' o 'rifiutata', riferimento)`. Non è inclusa. Foto e selfie vanno nei bucket
+privati `profili` e `checkins` (regole commentate in `schema_fase2h_fiducia.sql` e `schema_fase2.sql`).
+In demo SMS e fornitore sono simulati (codice 123456). Prezzo e durata: `platform_settings`.
+
+## Come si testa
+
+Vedi `tests/PIANO_TEST.md`: rischi, difese automatiche (80 test sul database e sull'interfaccia, più 5 di concorrenza
+su un PostgreSQL vero), difetti già trovati e corretti, cosa manca prima del lancio e come usare gli agenti.
+Si lancia con `cd tests && npm install && npm test`.
 
 ## Cosa manca prima del lancio
 

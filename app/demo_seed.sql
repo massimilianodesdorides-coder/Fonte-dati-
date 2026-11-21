@@ -118,9 +118,27 @@ insert into demo_users (id, label, descr, ord) values
  ('b0000000-0000-4000-8000-000000000006', 'Giulia Garbata', 'Hostess e servizio ai tavoli', 7),
  ('b0000000-0000-4000-8000-000000000007', 'Luca Libero', 'Barman e sala', 8);
 
--- bollino di identità: alcuni lavoratori sono già verificati; il ruolo di hostess del Gala lo richiede
+-- FIDUCIA A LIVELLI
+--  Marco: documento (forte). Hilda: verifica di base + foto confermata da un organizzatore.
+--  Luca: verifica di base. Nina: solo telefono. Giulia e gli altri: nessuna verifica.
 update profiles set verified_until = now() + interval '12 months', verification_level = 'forte'
- where full_name in ('Marco Esperto', 'Hilda Hostess', 'Luca Libero');
-update jobs set require_verified = true where id = 'c1000000-0000-4000-8000-000000000002';
+ where full_name = 'Marco Esperto';
+update auth.users set phone = '+39347000' || right(email, 0) || substr(id::text, 33, 4), phone_confirmed_at = now()
+ where email in ('marco@demo.it', 'hilda@demo.it', 'luca@demo.it', 'nina@demo.it');
+insert into worker_identity (worker_id, tax_code) values
+ ('b0000000-0000-4000-8000-000000000001', 'DEMOCF0000000001'),
+ ('b0000000-0000-4000-8000-000000000005', 'DEMOCF0000000002'),
+ ('b0000000-0000-4000-8000-000000000007', 'DEMOCF0000000003');
+-- foto del profilo caricate due mesi fa; per Hilda e Marco già confermate da un organizzatore sul campo
+update profiles set photo_path = 'demo/' || id || '.jpg', photo_set_at = now() - interval '2 months'
+ where full_name in ('Marco Esperto', 'Hilda Hostess', 'Luca Libero', 'Nico Ritardatario', 'Nina Nuova');
+insert into identity_confirmations (shift_id, worker_id, employer_id, outcome) values
+ ('d0000000-0000-4000-8000-000000000001', 'b0000000-0000-4000-8000-000000000001', 'a0000000-0000-4000-8000-000000000001', 'ok'),
+ ('d0000000-0000-4000-8000-000000000008', 'b0000000-0000-4000-8000-000000000005', 'a0000000-0000-4000-8000-000000000001', 'ok');
+update profiles set photo_checked_at = now() - interval '1 month'
+ where full_name in ('Marco Esperto', 'Hilda Hostess');
+-- il ruolo di hostess del Gala chiede la verifica di base; il barman della Sagra chiede il documento
+update jobs set min_verification = 'base' where id = 'c1000000-0000-4000-8000-000000000002';
+update jobs set min_verification = 'forte' where id = 'c1000000-0000-4000-8000-000000000004';
 
 delete from notifications;
