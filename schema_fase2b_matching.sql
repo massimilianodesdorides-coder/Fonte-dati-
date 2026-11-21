@@ -196,6 +196,15 @@ language sql stable security definer set search_path = public as $$
   order by n.updated_at desc
 $$;
 
+-- Punti di aggancio: nella Fase 2f vengono sostituiti con la logica reale
+-- (rating degli organizzatori, blocchi e soglie scelte dai lavoratori).
+create function public.worker_allows_offers_from(p_worker uuid, p_employer uuid, p_applied boolean)
+returns boolean
+language sql stable security definer set search_path = public as $$ select true $$;
+
+create function public.organizer_summary(p_employer uuid) returns jsonb
+language sql stable security definer set search_path = public as $$ select '{}'::jsonb $$;
+
 -- Classifica interna. p_reserve = true: candidati come RISERVA (serve disponibilità dichiarata)
 create function public.rank_candidates(p_job uuid, p_reserve boolean default false)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
@@ -204,7 +213,7 @@ returns table (worker_id uuid, display_name text, city text, bio text, roles tex
                annotation text, annotation_note text)
 language sql stable security definer set search_path = public as $$
   with j as (
-    select jb.id, jb.role_code, jb.starts_at, jb.ends_at, e.city as ev_city
+    select jb.id, jb.employer_id, jb.role_code, jb.starts_at, jb.ends_at, e.city as ev_city
     from public.jobs jb join public.events e on e.id = jb.event_id
     where jb.id = p_job
   ),
@@ -224,6 +233,8 @@ language sql stable security definer set search_path = public as $$
             or ( not p_reserve
                  and exists (select 1 from public.applications a where a.job_id = j.id and a.seeker_id = p.id) ) )
       and public.worker_is_free(p.id, j.starts_at, j.ends_at)
+      and public.worker_allows_offers_from(p.id, j.employer_id,
+            exists (select 1 from public.applications a where a.job_id = j.id and a.seeker_id = p.id))
       and not exists (select 1 from public.shifts s where s.job_id = j.id and s.worker_id = p.id)
   ),
   stats as (
@@ -268,7 +279,7 @@ create function public._send_offer(p_job uuid, p_worker uuid, p_mode text, p_sco
 returns uuid
 language plpgsql security definer set search_path = public as $$
 declare v_j public.jobs; v_e public.events; v_s public.platform_settings; v_g public.guarantees;
-        v_id uuid; v_exp timestamptz; v_body text; v_payload jsonb;
+        v_id uuid; v_exp timestamptz; v_body text; v_payload jsonb; v_org jsonb;
 begin
   select * into v_j from public.jobs where id = p_job;
   select * into v_e from public.events where id = v_j.event_id;
@@ -291,6 +302,12 @@ begin
               || ' € se non serve, paga piena (' || (v_j.shift_pay_cents / 100.0)::numeric(10,2) || ' €) se vieni attivata.';
   else
     v_body := v_body || ' Paga: ' || (v_j.shift_pay_cents / 100.0)::numeric(10,2) || ' €.';
+  end if;
+  v_org := public.organizer_summary(v_j.employer_id);
+  if v_org ? 'nuovo' then
+    v_payload := v_payload || jsonb_build_object('organizzatore', v_org);
+    v_body := v_body || case when (v_org->>'nuovo')::boolean then ' Nuovo organizzatore.'
+                             else ' Organizzatore: ' || (v_org->>'overall') || '/5 (' || (v_org->>'n') || ' giudizi).' end;
   end if;
   perform public._notify(p_worker,
     case p_kind when 'riserva' then 'proposta_riserva' else 'proposta_turno' end,
@@ -638,6 +655,7 @@ language sql stable security definer set search_path = public as $$
                   and lower(a.city) = lower(e.city)
                   and a.from_at <= j.starts_at and a.to_at >= j.ends_at)
     and public.worker_is_free(auth.uid(), j.starts_at, j.ends_at)
+    and public.worker_allows_offers_from(auth.uid(), j.employer_id, false)
     and not exists (select 1 from public.applications ap where ap.job_id = j.id and ap.seeker_id = auth.uid())
     and not exists (select 1 from public.shifts s where s.job_id = j.id and s.worker_id = auth.uid())
   order by j.starts_at
@@ -652,7 +670,8 @@ revoke all on function public._display_name(uuid), public._notify(uuid, text, te
   public.respond_offer(uuid, boolean), public.notify_shift_created(), public.fill_job(uuid),
   public.check_coverage(uuid), public.enable_auto_select(uuid), public.run_offer_maintenance(),
   public.open_standby_slots(), public.set_worker_note(uuid, text, text, text),
-  public.clear_worker_note(uuid), public.my_worker_notes()
+  public.clear_worker_note(uuid), public.my_worker_notes(),
+  public.worker_allows_offers_from(uuid, uuid, boolean), public.organizer_summary(uuid)
   from public, anon, authenticated;
 
 grant execute on function public.match_workers(uuid, int), public.match_reserves(uuid, int),

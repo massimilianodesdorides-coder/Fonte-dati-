@@ -51,16 +51,22 @@ begin
   if not found then return; end if;
 
   select coalesce(sum(j.headcount), 0)::int into v_posti
-    from public.jobs j where j.event_id = p_event;
+    from public.jobs j where j.event_id = p_event
+    and (j.is_open or exists (select 1 from public.shifts sx
+         where sx.job_id = j.id and sx.status in ('assegnato','confermato','completato')));
   -- posti ancora scoperti e garanzie ancora scoperte, su tutto l'evento
   select coalesce(sum(greatest(j.headcount - (
            select count(*) from public.shifts s
             where s.job_id = j.id and s.status in ('assegnato','confermato','completato')), 0)), 0)::int
-    into v_missing from public.jobs j where j.event_id = p_event;
+    into v_missing from public.jobs j where j.event_id = p_event
+    and (j.is_open or exists (select 1 from public.shifts sx
+         where sx.job_id = j.id and sx.status in ('assegnato','confermato','completato')));
   select count(*)::int,
          count(*) filter (where g.status not in ('coperta','attivata','chiusa'))::int
     into v_gar, v_missing_g
-    from public.guarantees g join public.jobs j on j.id = g.job_id where j.event_id = p_event;
+    from public.guarantees g join public.jobs j on j.id = g.job_id where j.event_id = p_event
+    and (j.is_open or exists (select 1 from public.shifts sx
+         where sx.job_id = j.id and sx.status in ('assegnato','confermato','completato')));
 
   v_complete := v_posti > 0 and v_missing = 0 and v_missing_g = 0;
   if v_complete = v_e.complete then return; end if;
