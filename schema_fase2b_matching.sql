@@ -477,6 +477,7 @@ begin
                     then 'Il sistema ha esaurito i candidati idonei: valuta di ampliare la richiesta.'
                     else 'Altri candidati disponibili: ' || v_more
                          || case when v_mr > 0 then ' (riserve: ' || v_morer || ')' else '' end || '.' end;
+  v_body := v_body || ' Puoi cercare anche su altri canali condividendo il link dell''evento.';
   perform public._notify(v_j.employer_id, v_kind,
     case when v_j.auto_select then 'Candidati esauriti' else 'Servono altri candidati' end,
     v_body, p_job, jsonb_build_object('mancanti', v_ms, 'riserve_mancanti', v_mr,
