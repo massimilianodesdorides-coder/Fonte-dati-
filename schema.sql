@@ -86,6 +86,18 @@ $$;
 revoke all on function public.delete_my_account() from public, anon;
 grant execute on function public.delete_my_account() to authenticated;
 
+-- Ruolo dell'utente collegato. Funzione "security definer": legge profiles
+-- senza passare dalle regole di sicurezza, ed evita il ciclo
+-- profiles -> applications -> profiles ("infinite recursion detected in policy").
+create or replace function public.my_role()
+returns public.user_role
+language sql stable security definer
+set search_path = public
+as $$ select role from public.profiles where id = auth.uid() $$;
+
+revoke all on function public.my_role() from public, anon;
+grant execute on function public.my_role() to authenticated;
+
 -- 4) SICUREZZA: ROW LEVEL SECURITY -------------------------------------
 -- Regola base: tutto è CHIUSO, poi apriamo solo ciò che serve.
 
@@ -134,8 +146,7 @@ create policy "annunci: solo datori creano i propri"
   on public.jobs for insert to authenticated
   with check (
     employer_id = auth.uid()
-    and exists (select 1 from public.profiles p
-                where p.id = auth.uid() and p.role = 'employer')
+    and public.my_role() = 'employer'
   );
 
 create policy "annunci: modifico i miei"
@@ -160,8 +171,7 @@ create policy "candidature: solo chi cerca lavoro, solo su annunci aperti"
   on public.applications for insert to authenticated
   with check (
     seeker_id = auth.uid()
-    and exists (select 1 from public.profiles p
-                where p.id = auth.uid() and p.role = 'seeker')
+    and public.my_role() = 'seeker'
     and exists (select 1 from public.jobs j
                 where j.id = job_id and j.is_open = true)
   );
