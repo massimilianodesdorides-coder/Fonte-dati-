@@ -99,6 +99,33 @@ create policy "notifiche: le mie" on public.notifications
 create policy "notifiche: segno come lette le mie" on public.notifications
   for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
 
+-- ANNOTAZIONI PRIVATE DELL'ORGANIZZATORE: "preferito" / "da evitare"
+-- * Le vede solo chi le ha scritte: mai il lavoratore, mai altri organizzatori,
+--   e non entrano nel punteggio degli altri.
+-- * "preferito" passa in cima alla classifica dell'organizzatore.
+-- * "da evitare" richiede un motivo a scelta e non viene mai invitato in
+--   automatico; l'invito manuale è bloccato finché la nota non viene tolta.
+-- * Sono dati personali: il lavoratore può chiederne l'accesso (GDPR art. 15).
+--   La nota libera va tenuta ai fatti di lavoro, mai a caratteristiche personali.
+create table public.worker_notes (
+  id          uuid primary key default gen_random_uuid(),
+  employer_id uuid not null references public.profiles(id) on delete cascade,
+  worker_id   uuid not null references public.profiles(id) on delete cascade,
+  kind        text not null check (kind in ('preferito','da_evitare')),
+  reason      text check (reason in ('puntualita','comportamento','qualita','altro')),
+  note        text not null default '' check (char_length(note) <= 300),
+  updated_at  timestamptz not null default now(),
+  unique (employer_id, worker_id),
+  check (kind = 'preferito' or reason is not null)
+);
+create index on public.worker_notes (worker_id);
+
+alter table public.worker_notes enable row level security;
+revoke all on public.worker_notes from anon, authenticated;
+grant select on public.worker_notes to authenticated;
+create policy "note: le mie" on public.worker_notes
+  for select to authenticated using (employer_id = auth.uid());
+
 -- Chi ha un invito aperto o accettato vede l'annuncio (anche se chiuso)
 create or replace function public.involved_in_job(p_job uuid) returns boolean
 language sql stable security definer set search_path = public as $$
@@ -129,11 +156,52 @@ language sql security definer set search_path = public as $$
   values (p_user, p_kind, p_title, p_body, p_job, coalesce(p_payload, '{}'))
 $$;
 
+create function public.set_worker_note(p_worker uuid, p_kind text, p_reason text default null,
+                                       p_note text default '') returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if public.my_role() is distinct from 'employer' then raise exception 'solo gli organizzatori'; end if;
+  if p_kind not in ('preferito','da_evitare') then raise exception 'tipo non valido'; end if;
+  if p_kind = 'da_evitare' and p_reason is null then raise exception 'indica il motivo'; end if;
+  if p_reason is not null and p_reason not in ('puntualita','comportamento','qualita','altro') then
+    raise exception 'motivo non valido';
+  end if;
+  -- si annotano solo persone che l'organizzatore conosce o può vedere nelle ricerche
+  if not ( public.employer_of_worker(p_worker)
+           or exists (select 1 from public.applications a join public.jobs j on j.id = a.job_id
+                      where a.seeker_id = p_worker and j.employer_id = auth.uid())
+           or exists (select 1 from public.offers o join public.jobs j on j.id = o.job_id
+                      where o.worker_id = p_worker and j.employer_id = auth.uid())
+           or exists (select 1 from public.profiles p
+                      where p.id = p_worker and p.role = 'seeker' and p.discoverable) ) then
+    raise exception 'persona non trovata';
+  end if;
+  insert into public.worker_notes (employer_id, worker_id, kind, reason, note)
+  values (auth.uid(), p_worker, p_kind, case when p_kind = 'da_evitare' then p_reason else null end,
+          coalesce(p_note, ''))
+  on conflict (employer_id, worker_id)
+  do update set kind = excluded.kind, reason = excluded.reason, note = excluded.note, updated_at = now();
+end $$;
+
+create function public.clear_worker_note(p_worker uuid) returns void
+language sql security definer set search_path = public as $$
+  delete from public.worker_notes where employer_id = auth.uid() and worker_id = p_worker
+$$;
+
+create function public.my_worker_notes()
+returns table (worker_id uuid, display_name text, kind text, reason text, note text, updated_at timestamptz)
+language sql stable security definer set search_path = public as $$
+  select n.worker_id, public._display_name(n.worker_id), n.kind, n.reason, n.note, n.updated_at
+  from public.worker_notes n where n.employer_id = auth.uid()
+  order by n.updated_at desc
+$$;
+
 -- Classifica interna. p_reserve = true: candidati come RISERVA (serve disponibilità dichiarata)
 create function public.rank_candidates(p_job uuid, p_reserve boolean default false)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
-               applied boolean, offer_status text, score int, breakdown jsonb)
+               applied boolean, offer_status text, score int, breakdown jsonb,
+               annotation text, annotation_note text)
 language sql stable security definer set search_path = public as $$
   with j as (
     select jb.id, jb.role_code, jb.starts_at, jb.ends_at, e.city as ev_city
@@ -186,8 +254,12 @@ language sql stable security definer set search_path = public as $$
          (select o.status from public.offers o where o.job_id = p_job and o.worker_id = sc.id),
          sc.p_city + sc.p_exp + sc.p_rel + sc.p_int,
          jsonb_build_object('citta', sc.p_city, 'esperienza', sc.p_exp,
-                            'affidabilita', sc.p_rel, 'interesse', sc.p_int)
+                            'affidabilita', sc.p_rel, 'interesse', sc.p_int),
+         n.kind, n.note
   from scored sc
+  left join public.worker_notes n
+         on n.worker_id = sc.id
+        and n.employer_id = (select employer_id from public.jobs where id = p_job)
 $$;
 
 -- Invio di una proposta + notifica al lavoratore
@@ -232,22 +304,24 @@ end $$;
 create function public.match_workers(p_job uuid, p_limit int default 50)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
-               applied boolean, offer_status text, score int, breakdown jsonb)
+               applied boolean, offer_status text, score int, breakdown jsonb,
+               annotation text, annotation_note text)
 language sql stable security definer set search_path = public as $$
   select * from public.rank_candidates(p_job, false)
   where public.is_job_employer(p_job)
-  order by score desc, md5(worker_id::text || p_job::text)
+  order by case annotation when 'preferito' then 0 when 'da_evitare' then 2 else 1 end, score desc, md5(worker_id::text || p_job::text)
   limit least(greatest(p_limit, 1), 200)
 $$;
 
 create function public.match_reserves(p_job uuid, p_limit int default 50)
 returns table (worker_id uuid, display_name text, city text, bio text, roles text[],
                completed_shifts int, completed_same_role int, no_shows int, lates int,
-               applied boolean, offer_status text, score int, breakdown jsonb)
+               applied boolean, offer_status text, score int, breakdown jsonb,
+               annotation text, annotation_note text)
 language sql stable security definer set search_path = public as $$
   select * from public.rank_candidates(p_job, true)
   where public.is_job_employer(p_job)
-  order by score desc, md5(worker_id::text || p_job::text)
+  order by case annotation when 'preferito' then 0 when 'da_evitare' then 2 else 1 end, score desc, md5(worker_id::text || p_job::text)
   limit least(greatest(p_limit, 1), 200)
 $$;
 
@@ -263,6 +337,9 @@ begin
   if v_j.starts_at <= now() then raise exception 'il turno è già iniziato'; end if;
   select * into v_c from public.rank_candidates(p_job, false) where worker_id = p_worker;
   if not found then raise exception 'persona non idonea o non disponibile per questo annuncio'; end if;
+  if v_c.annotation = 'da_evitare' then
+    raise exception 'persona segnata come "da evitare": togli la nota per invitarla';
+  end if;
   if v_c.offer_status is not null then raise exception 'già invitato (stato: %)', v_c.offer_status; end if;
   select * into v_s from public.platform_settings;
   select count(*) into v_act from public.shifts
@@ -290,6 +367,9 @@ begin
   end if;
   select * into v_c from public.rank_candidates(v_j.id, true) where worker_id = p_worker;
   if not found then raise exception 'persona non idonea come riserva'; end if;
+  if v_c.annotation = 'da_evitare' then
+    raise exception 'persona segnata come "da evitare": togli la nota per invitarla';
+  end if;
   if v_c.offer_status is not null then raise exception 'già contattato (stato: %)', v_c.offer_status; end if;
   return public._send_offer(v_j.id, p_worker, 'manuale', v_c.score, 'riserva', p_guarantee);
 end $$;
@@ -415,8 +495,8 @@ begin
   if v_missing > 0 then
     for r in
       select worker_id, score from public.rank_candidates(p_job, false)
-      where offer_status is null
-      order by score desc, md5(worker_id::text || p_job::text)
+      where offer_status is null and annotation is distinct from 'da_evitare'
+      order by case annotation when 'preferito' then 0 when 'da_evitare' then 2 else 1 end, score desc, md5(worker_id::text || p_job::text)
       limit v_missing
     loop
       perform public._send_offer(p_job, r.worker_id, 'automatico', r.score);
@@ -431,8 +511,8 @@ begin
     order by gu.created_at
   loop
     select worker_id, score into c from public.rank_candidates(p_job, true)
-     where offer_status is null
-     order by score desc, md5(worker_id::text || g.id::text) limit 1;
+     where offer_status is null and annotation is distinct from 'da_evitare'
+     order by case annotation when 'preferito' then 0 when 'da_evitare' then 2 else 1 end, score desc, md5(worker_id::text || g.id::text) limit 1;
     exit when not found;
     perform public._send_offer(p_job, c.worker_id, 'automatico', c.score, 'riserva', g.id);
     n := n + 1;
@@ -464,8 +544,8 @@ begin
     return;
   end if;
 
-  select count(*) into v_more  from public.rank_candidates(p_job, false) where offer_status is null;
-  select count(*) into v_morer from public.rank_candidates(p_job, true)  where offer_status is null;
+  select count(*) into v_more  from public.rank_candidates(p_job, false) where offer_status is null and annotation is distinct from 'da_evitare';
+  select count(*) into v_morer from public.rank_candidates(p_job, true)  where offer_status is null and annotation is distinct from 'da_evitare';
   v_kind := case when v_j.auto_select then 'candidati_esauriti' else 'altri_candidati' end;
   if exists (select 1 from public.notifications
              where user_id = v_j.employer_id and kind = v_kind and job_id = p_job and read_at is null) then
@@ -549,6 +629,8 @@ language sql stable security definer set search_path = public as $$
     and public.my_role() = 'seeker'
     and g.status = 'aperta' and j.starts_at > now()
     and not exists (select 1 from public.offers o where o.guarantee_id = g.id and o.status = 'inviata')
+    and not exists (select 1 from public.worker_notes wn
+                    where wn.employer_id = j.employer_id and wn.worker_id = auth.uid() and wn.kind = 'da_evitare')
     and exists (select 1 from public.worker_roles r
                 where r.worker_id = auth.uid() and r.role_code = j.role_code)
     and exists (select 1 from public.standby_availability a
@@ -569,12 +651,14 @@ revoke all on function public._display_name(uuid), public._notify(uuid, text, te
   public.invite_worker(uuid, uuid), public.invite_reserve(uuid, uuid), public.withdraw_offer(uuid),
   public.respond_offer(uuid, boolean), public.notify_shift_created(), public.fill_job(uuid),
   public.check_coverage(uuid), public.enable_auto_select(uuid), public.run_offer_maintenance(),
-  public.open_standby_slots()
+  public.open_standby_slots(), public.set_worker_note(uuid, text, text, text),
+  public.clear_worker_note(uuid), public.my_worker_notes()
   from public, anon, authenticated;
 
 grant execute on function public.match_workers(uuid, int), public.match_reserves(uuid, int),
   public.invite_worker(uuid, uuid), public.invite_reserve(uuid, uuid), public.withdraw_offer(uuid),
   public.respond_offer(uuid, boolean), public.enable_auto_select(uuid),
-  public.open_standby_slots() to authenticated;
+  public.open_standby_slots(), public.set_worker_note(uuid, text, text, text),
+  public.clear_worker_note(uuid), public.my_worker_notes() to authenticated;
 -- Solo server (pg_cron / service_role): rank_candidates, _send_offer, _notify, fill_job,
 -- check_coverage, run_offer_maintenance
