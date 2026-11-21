@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lavoro Facile</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2330;--muted:#6b7385;--brand:#1f6feb;--brand2:#e8f0fe;--danger:#d93025;--ok:#188038;--line:#e3e6ec}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.45;padding-bottom:3rem}
+header{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.bar{max-width:760px;margin:0 auto;padding:.7rem 1rem;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between}
+.logo{font-weight:700;font-size:1.1rem;color:var(--brand);cursor:pointer}
+nav{display:flex;flex-wrap:wrap;gap:.35rem}
+nav button{background:none;border:0;padding:.4rem .6rem;border-radius:8px;font-size:.9rem;color:var(--text);cursor:pointer}
+nav button:hover,nav button.on{background:var(--brand2);color:var(--brand)}
+main{max-width:760px;margin:0 auto;padding:1rem}
+h2{font-size:1.25rem;margin:.3rem 0 .8rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1rem;margin-bottom:.8rem}
+.card h3{font-size:1.05rem;margin-bottom:.2rem}
+.muted{color:var(--muted);font-size:.88rem}
+.tag{display:inline-block;background:var(--brand2);color:var(--brand);border-radius:99px;padding:.1rem .6rem;font-size:.78rem;margin:.2rem .3rem .2rem 0}
+label{display:block;font-size:.88rem;margin:.7rem 0 .25rem;font-weight:600}
+input,textarea,select{width:100%;padding:.65rem .75rem;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+textarea{min-height:110px;resize:vertical}
+input[type=checkbox]{width:auto;margin-right:.5rem}
+.chk{display:flex;align-items:flex-start;font-weight:400;font-size:.88rem;margin-top:.9rem}
+button.pri{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:.7rem 1.1rem;font:inherit;font-weight:600;cursor:pointer;margin-top:1rem}
+button.sec{background:#fff;color:var(--brand);border:1px solid var(--brand);border-radius:8px;padding:.5rem .9rem;font:inherit;cursor:pointer}
+button.dng{background:#fff;color:var(--danger);border:1px solid var(--danger);border-radius:8px;padding:.5rem .9rem;font:inherit;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem}
+.msg{padding:.7rem .9rem;border-radius:8px;margin-bottom:.8rem;font-size:.92rem}
+.msg.err{background:#fce8e6;color:var(--danger)}
+.msg.ok{background:#e6f4ea;color:var(--ok)}
+.msg.info{background:var(--brand2);color:#174ea6}
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.8rem}
+.desc{white-space:pre-wrap;margin:.6rem 0}
+a{color:var(--brand)}
+@media(max-width:520px){.filters{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="bar"><span class="logo" id="logo">Lavoro Facile</span><nav id="nav"></nav></div></header>
+<main id="app"></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* ============================================================
+   CONFIGURAZIONE — incolla qui i due valori presi da Supabase
+   (Project Settings → API). Sono pubblici per progetto: la
+   sicurezza è garantita dalle regole del database, non da questi.
+   ============================================================ */
+const SUPABASE_URL = "INCOLLA_QUI_PROJECT_URL";
+const SUPABASE_ANON_KEY = "INCOLLA_QUI_ANON_PUBLIC_KEY";
+/* Dati del titolare del trattamento (obbligatori per la privacy) */
+const TITOLARE = "NOME E COGNOME / RAGIONE SOCIALE — email di contatto";
+
+const app = document.getElementById('app');
+const navEl = document.getElementById('nav');
+let sb = null, session = null, profile = null;
+
+/* --------- utilità sicurezza: mai inserire testo utente come HTML --------- */
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtDate = d => new Date(d).toLocaleDateString('it-IT');
+const notice = (type, text) => `<div class="msg ${type}">${esc(text)}</div>`;
+
+function humanError(e){
+  const m = (e && e.message) || String(e);
+  if (/Invalid login/i.test(m)) return 'Email o password non corretti.';
+  if (/already registered|already been registered/i.test(m)) return 'Questa email è già registrata.';
+  if (/duplicate key/i.test(m)) return 'Ti sei già candidato a questo annuncio.';
+  if (/Password should be/i.test(m)) return 'La password deve avere almeno 8 caratteri.';
+  if (/Email not confirmed/i.test(m)) return 'Devi prima confermare l\'email: controlla la posta.';
+  if (/row-level security/i.test(m)) return 'Operazione non consentita.';
+  return 'Si è verificato un errore: ' + m;
+}
+
+/* ------------------------------ avvio ------------------------------ */
+async function init(){
+  if (SUPABASE_URL.startsWith('INCOLLA')) {
+    app.innerHTML = notice('info', 'App non ancora configurata: segui la GUIDA.md e inserisci i due valori di Supabase in cima al file index.html.');
+    return;
+  }
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data } = await sb.auth.getSession();
+  session = data.session;
+  sb.auth.onAuthStateChange(async (_e, s) => { session = s; await loadProfile(); renderNav(); });
+  await loadProfile();
+  renderNav();
+  go('jobs');
+}
+
+async function loadProfile(){
+  profile = null;
+  if (!session) return;
+  const { data } = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle();
+  profile = data;
+}
+
+/* ----------------------------- navigazione ----------------------------- */
+let current = 'jobs';
+function renderNav(){
+  const items = [['jobs','Annunci']];
+  if (!session) { items.push(['login','Accedi'], ['register','Registrati']); }
+  else {
+    if (profile?.role === 'employer') items.push(['post','Pubblica'], ['myjobs','I miei annunci']);
+    if (profile?.role === 'seeker') items.push(['myapps','Candidature']);
+    items.push(['profile','Profilo'], ['logout','Esci']);
+  }
+  navEl.innerHTML = items.map(([k,l]) => `<button data-k="${k}" class="${k===current?'on':''}">${l}</button>`).join('');
+  navEl.querySelectorAll('button').forEach(b => b.onclick = () => go(b.dataset.k));
+}
+document.getElementById('logo').onclick = () => go('jobs');
+
+async function go(view, arg){
+  current = view;
+  renderNav();
+  if (view === 'logout') { await sb.auth.signOut(); profile = null; return go('jobs'); }
+  const needsLogin = ['post','myjobs','myapps','profile'];
+  if (needsLogin.includes(view) && !session) return go('login');
+  ({jobs:viewJobs, job:viewJob, login:viewLogin, register:viewRegister,
+    post:viewPost, myjobs:viewMyJobs, myapps:viewMyApps, profile:viewProfile,
+    privacy:viewPrivacy}[view] || viewJobs)(arg);
+  window.scrollTo(0,0);
+}
+
+/* ------------------------------ ANNUNCI ------------------------------ */
+async function viewJobs(){
+  app.innerHTML = `<h2>Offerte di lavoro</h2>
+    <div class="filters">
+      <input id="q" placeholder="Cerca (es. cameriere)">
+      <input id="c" placeholder="Città">
+    </div><div id="list">Caricamento…</div>`;
+  const list = document.getElementById('list');
+  async function load(){
+    let q = sb.from('jobs').select('*').eq('is_open', true).order('created_at', {ascending:false}).limit(100);
+    const t = document.getElementById('q').value.trim().replace(/[%,()]/g,' ');
+    const c = document.getElementById('c').value.trim().replace(/[%,()]/g,' ');
+    if (t) q = q.or(`title.ilike.%${t}%,description.ilike.%${t}%,company_name.ilike.%${t}%`);
+    if (c) q = q.ilike('city', `%${c}%`);
+    const { data, error } = await q;
+    if (error) { list.innerHTML = notice('err', humanError(error)); return; }
+    if (!data.length) { list.innerHTML = '<p class="muted">Nessun annuncio trovato.</p>'; return; }
+    list.innerHTML = data.map(j => `<div class="card">
+      <h3>${esc(j.title)}</h3>
+      <div class="muted">${esc(j.company_name)} · ${esc(j.city)} · ${fmtDate(j.created_at)}</div>
+      ${j.contract_type ? `<span class="tag">${esc(j.contract_type)}</span>` : ''}
+      <div class="row"><button class="sec" data-id="${esc(j.id)}">Vedi dettagli</button></div>
+    </div>`).join('');
+    list.querySelectorAll('button').forEach(b => b.onclick = () => go('job', b.dataset.id));
+  }
+  document.getElementById('q').oninput = debounce(load, 350);
+  document.getElementById('c').oninput = debounce(load, 350);
+  load();
+}
+function debounce(fn, ms){ let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+async function viewJob(id){
+  app.innerHTML = 'Caricamento…';
+  const { data: j, error } = await sb.from('jobs').select('*').eq('id', id).maybeSingle();
+  if (error || !j) { app.innerHTML = notice('err', 'Annuncio non trovato.'); return; }
+  let action = '';
+  if (!session) action = `<p class="muted">Per candidarti <a href="#" id="lg">accedi</a> o <a href="#" id="rg">registrati</a>.</p>`;
+  else if (profile?.role === 'seeker') action = `
+      <div id="fb"></div>
+      <label>Messaggio per il datore di lavoro (facoltativo)</label>
+      <textarea id="msg" maxlength="2000" placeholder="Presentati in due righe…"></textarea>
+      <button class="pri" id="apply">Candidati</button>`;
+  else action = '<p class="muted">Solo chi cerca lavoro può candidarsi.</p>';
+  app.innerHTML = `<button class="sec" id="back">← Indietro</button>
+    <div class="card" style="margin-top:.8rem">
+      <h3>${esc(j.title)}</h3>
+      <div class="muted">${esc(j.company_name)} · ${esc(j.city)} · ${fmtDate(j.created_at)}</div>
+      ${j.contract_type ? `<span class="tag">${esc(j.contract_type)}</span>` : ''}
+      <div class="desc">${esc(j.description)}</div>${action}
+    </div>`;
+  document.getElementById('back').onclick = () => go('jobs');
+  document.getElementById('lg')?.addEventListener('click', e => { e.preventDefault(); go('login'); });
+  document.getElementById('rg')?.addEventListener('click', e => { e.preventDefault(); go('register'); });
+  document.getElementById('apply')?.addEventListener('click', async e => {
+    e.target.disabled = true;
+    const { error } = await sb.from('applications').insert({
+      job_id: j.id, seeker_id: session.user.id,
+      message: document.getElementById('msg').value.trim() || null });
+    document.getElementById('fb').innerHTML = error ? notice('err', humanError(error)) : notice('ok', 'Candidatura inviata!');
+    if (error) e.target.disabled = false;
+  });
+}
+
+/* ------------------------- LOGIN / REGISTRAZIONE ------------------------- */
+function viewLogin(){
+  app.innerHTML = `<h2>Accedi</h2><div class="card"><div id="fb"></div>
+    <label>Email</label><input id="em" type="email" autocomplete="email">
+    <label>Password</label><input id="pw" type="password" autocomplete="current-password">
+    <button class="pri" id="go">Accedi</button>
+    <div class="row"><button class="sec" id="forgot">Password dimenticata</button></div></div>`;
+  const fb = document.getElementById('fb');
+  document.getElementById('go').onclick = async () => {
+    const { error } = await sb.auth.signInWithPassword({ email: em.value.trim(), password: pw.value });
+    if (error) fb.innerHTML = notice('err', humanError(error)); else { await loadProfile(); go('jobs'); }
+  };
+  document.getElementById('forgot').onclick = async () => {
+    if (!em.value.trim()) { fb.innerHTML = notice('err', 'Scrivi prima la tua email.'); return; }
+    const { error } = await sb.auth.resetPasswordForEmail(em.value.trim(), { redirectTo: location.origin + location.pathname });
+    fb.innerHTML = error ? notice('err', humanError(error)) : notice('ok', 'Se l\'email esiste, riceverai un link per reimpostare la password.');
+  };
+}
+
+function viewRegister(){
+  app.innerHTML = `<h2>Crea il tuo account</h2><div class="card"><div id="fb"></div>
+    <label>Cosa vuoi fare?</label>
+    <select id="role"><option value="seeker">Cerco lavoro</option><option value="employer">Offro lavoro</option></select>
+    <label>Nome e cognome (o nome dell'azienda)</label><input id="nm" maxlength="100">
+    <label>Email</label><input id="em" type="email" autocomplete="email">
+    <label>Password (minimo 8 caratteri)</label><input id="pw" type="password" autocomplete="new-password">
+    <label class="chk"><input type="checkbox" id="ok"> <span>Ho letto l'<a href="#" id="pv">informativa privacy</a> e acconsento al trattamento dei miei dati.</span></label>
+    <button class="pri" id="go">Registrati</button></div>`;
+  document.getElementById('pv').onclick = e => { e.preventDefault(); go('privacy'); };
+  document.getElementById('go').onclick = async () => {
+    const fb = document.getElementById('fb');
+    const name = nm.value.trim();
+    if (name.length < 2) return fb.innerHTML = notice('err', 'Inserisci il nome.');
+    if (pw.value.length < 8) return fb.innerHTML = notice('err', 'La password deve avere almeno 8 caratteri.');
+    if (!ok.checked) return fb.innerHTML = notice('err', 'Devi accettare l\'informativa privacy.');
+    const { data, error } = await sb.auth.signUp({
+      email: em.value.trim(), password: pw.value,
+      options: { data: { role: role.value, full_name: name }, emailRedirectTo: location.origin + location.pathname }
+    });
+    if (error) return fb.innerHTML = notice('err', humanError(error));
+    if (data.session) { await loadProfile(); go('profile'); }
+    else app.innerHTML = notice('ok', 'Registrazione quasi completata: ti abbiamo inviato un\'email, clicca il link per confermare, poi accedi.');
+  };
+}
+
+/* ------------------------------ DATORE ------------------------------ */
+function viewPost(){
+  if (profile?.role !== 'employer') { app.innerHTML = notice('err', 'Solo i datori di lavoro possono pubblicare.'); return; }
+  app.innerHTML = `<h2>Pubblica un annuncio</h2><div class="card"><div id="fb"></div>
+    <label>Nome azienda</label><input id="co" maxlength="120" value="${esc(profile.full_name)}">
+    <label>Titolo (es. Cameriere/a)</label><input id="ti" maxlength="120">
+    <label>Città</label><input id="ci" maxlength="100" value="${esc(profile.city || '')}">
+    <label>Tipo di contratto</label>
+    <select id="ct"><option value="">Non specificato</option><option>Tempo indeterminato</option><option>Tempo determinato</option><option>Part-time</option><option>Stagionale</option><option>Collaborazione / P.IVA</option><option>Stage / Tirocinio</option></select>
+    <label>Descrizione</label><textarea id="de" maxlength="5000" placeholder="Mansioni, orari, requisiti…"></textarea>
+    <button class="pri" id="go">Pubblica</button></div>`;
+  document.getElementById('go').onclick = async e => {
+    const fb = document.getElementById('fb');
+    e.target.disabled = true;
+    const { error } = await sb.from('jobs').insert({
+      employer_id: session.user.id, company_name: co.value.trim(), title: ti.value.trim(),
+      city: ci.value.trim(), contract_type: ct.value || null, description: de.value.trim() });
+    if (error) { fb.innerHTML = notice('err', humanError(error) + ' (controlla che tutti i campi siano compilati)'); e.target.disabled = false; }
+    else go('myjobs');
+  };
+}
+
+async function viewMyJobs(){
+  app.innerHTML = '<h2>I miei annunci</h2><div id="list">Caricamento…</div>';
+  const { data: jobs, error } = await sb.from('jobs').select('*').eq('employer_id', session.user.id).order('created_at', {ascending:false});
+  const list = document.getElementById('list');
+  if (error) { list.innerHTML = notice('err', humanError(error)); return; }
+  if (!jobs.length) { list.innerHTML = '<p class="muted">Non hai ancora pubblicato annunci.</p>'; return; }
+  const { data: apps } = await sb.from('applications')
+    .select('id,job_id,message,created_at,profiles!applications_seeker_id_fkey(full_name,email,phone,city,bio)')
+    .in('job_id', jobs.map(j => j.id)).order('created_at', {ascending:false});
+  const byJob = {};
+  (apps || []).forEach(a => (byJob[a.job_id] ||= []).push(a));
+  list.innerHTML = jobs.map(j => {
+    const cands = byJob[j.id] || [];
+    return `<div class="card">
+      <h3>${esc(j.title)} ${j.is_open ? '' : '<span class="tag">chiuso</span>'}</h3>
+      <div class="muted">${esc(j.city)} · ${fmtDate(j.created_at)} · ${cands.length} candidature</div>
+      <div class="row">
+        <button class="sec" data-t="${esc(j.id)}">${j.is_open ? 'Chiudi annuncio' : 'Riapri annuncio'}</button>
+        <button class="dng" data-d="${esc(j.id)}">Elimina</button></div>
+      ${cands.map(a => { const p = a.profiles || {}; return `<div class="card" style="margin-top:.7rem;background:var(--bg)">
+        <strong>${esc(p.full_name)}</strong> <span class="muted">${esc(p.city || '')}</span><br>
+        <span class="muted">${esc(p.email || '')} ${esc(p.phone || '')}</span>
+        ${p.bio ? `<div class="desc">${esc(p.bio)}</div>` : ''}
+        ${a.message ? `<div class="desc"><em>“${esc(a.message)}”</em></div>` : ''}</div>`; }).join('')}
+    </div>`; }).join('');
+  list.querySelectorAll('[data-t]').forEach(b => b.onclick = async () => {
+    const j = jobs.find(x => x.id === b.dataset.t);
+    await sb.from('jobs').update({ is_open: !j.is_open }).eq('id', j.id); viewMyJobs(); });
+  list.querySelectorAll('[data-d]').forEach(b => b.onclick = async () => {
+    if (!confirm('Eliminare definitivamente questo annuncio e le sue candidature?')) return;
+    await sb.from('jobs').delete().eq('id', b.dataset.d); viewMyJobs(); });
+}
+
+/* ------------------------------ CANDIDATO ------------------------------ */
+async function viewMyApps(){
+  app.innerHTML = '<h2>Le mie candidature</h2><div id="list">Caricamento…</div>';
+  const { data, error } = await sb.from('applications')
+    .select('id,created_at,message,jobs(title,company_name,city)').eq('seeker_id', session.user.id).order('created_at', {ascending:false});
+  const list = document.getElementById('list');
+  if (error) { list.innerHTML = notice('err', humanError(error)); return; }
+  if (!data.length) { list.innerHTML = '<p class="muted">Non ti sei ancora candidato a nessun annuncio.</p>'; return; }
+  list.innerHTML = data.map(a => `<div class="card">
+    <h3>${esc(a.jobs?.title)}</h3>
+    <div class="muted">${esc(a.jobs?.company_name)} · ${esc(a.jobs?.city)} · inviata il ${fmtDate(a.created_at)}</div>
+    <div class="row"><button class="dng" data-id="${esc(a.id)}">Ritira candidatura</button></div></div>`).join('');
+  list.querySelectorAll('button').forEach(b => b.onclick = async () => {
+    await sb.from('applications').delete().eq('id', b.dataset.id); viewMyApps(); });
+}
+
+/* ------------------------------ PROFILO ------------------------------ */
+function viewProfile(){
+  if (!profile) { app.innerHTML = notice('info', 'Caricamento profilo… riprova tra un attimo.'); return; }
+  app.innerHTML = `<h2>Il mio profilo</h2><div class="card"><div id="fb"></div>
+    <p class="muted">${profile.role === 'seeker' ? 'Cerchi lavoro' : 'Offri lavoro'} · ${esc(profile.email)}</p>
+    <label>Nome</label><input id="nm" maxlength="100" value="${esc(profile.full_name)}">
+    <label>Città</label><input id="ci" maxlength="100" value="${esc(profile.city || '')}">
+    <label>Telefono (visibile solo ai datori a cui ti candidi)</label><input id="ph" maxlength="30" value="${esc(profile.phone || '')}">
+    <label>${profile.role === 'seeker' ? 'Presentazione ed esperienze' : 'Presentazione azienda'}</label>
+    <textarea id="bio" maxlength="2000">${esc(profile.bio || '')}</textarea>
+    <button class="pri" id="save">Salva</button></div>
+    <div class="card"><h3>I tuoi dati</h3>
+    <p class="muted">Puoi cancellare il tuo account e tutti i dati collegati in qualsiasi momento. L'operazione è definitiva.</p>
+    <div class="row"><button class="sec" id="pv">Informativa privacy</button><button class="dng" id="del">Cancella il mio account</button></div></div>`;
+  document.getElementById('pv').onclick = () => go('privacy');
+  document.getElementById('save').onclick = async () => {
+    const { error } = await sb.from('profiles').update({
+      full_name: nm.value.trim(), city: ci.value.trim() || null, phone: ph.value.trim() || null, bio: bio.value.trim() || null
+    }).eq('id', session.user.id);
+    document.getElementById('fb').innerHTML = error ? notice('err', humanError(error)) : notice('ok', 'Profilo salvato.');
+    if (!error) await loadProfile();
+  };
+  document.getElementById('del').onclick = async () => {
+    if (!confirm('Cancellare definitivamente account, annunci e candidature?')) return;
+    const { error } = await sb.rpc('delete_my_account');
+    if (error) { document.getElementById('fb').innerHTML = notice('err', humanError(error)); return; }
+    await sb.auth.signOut(); profile = null; go('jobs');
+  };
+}
+
+function viewPrivacy(){
+  app.innerHTML = `<h2>Informativa privacy (bozza)</h2><div class="card desc">
+Titolare del trattamento: ${esc(TITOLARE)}
+
+Dati raccolti: nome, email, città, telefono e presentazione facoltativi, annunci e candidature.
+
+Finalità: permettere l'incontro tra chi cerca e chi offre lavoro. Gli annunci aperti sono pubblici. I dati di un candidato (nome, email, telefono, città, presentazione) sono visibili solo ai datori di lavoro a cui si candida.
+
+Base giuridica: consenso e esecuzione del servizio richiesto.
+
+Conservazione: fino alla cancellazione dell'account, che puoi fare in autonomia dalla pagina Profilo.
+
+Diritti: accesso, rettifica, cancellazione, portabilità, opposizione, reclamo al Garante Privacy (garanteprivacy.it).
+
+NOTA: questo testo è una bozza da far verificare a un consulente legale prima della pubblicazione.</div>`;
+}
+
+init();
+</script>
+</body>
+</html>
